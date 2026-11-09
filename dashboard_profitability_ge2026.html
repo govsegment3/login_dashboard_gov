@@ -325,6 +325,7 @@ dialog::backdrop{background:#0b0f18aa}
         <div class="filters">
           <div class="fld"><label>Sumber angka</label>
             <div class="seg" role="group" aria-label="Sumber angka"><button id="srcSap" class="on">SAP</button><button id="srcOps">OPS</button></div></div>
+          <div class="fld"><label for="fPe">Periode s.d.</label><select id="fPe"></select></div>
           <div class="fld"><label for="fSeg">Segmen</label><select id="fSeg"></select></div>
           <div class="fld"><label for="fSl">Service line</label><select id="fSl"></select></div>
           <div class="fld"><label for="fCust">Layanan</label><select id="fCust"></select></div>
@@ -348,16 +349,22 @@ dialog::backdrop{background:#0b0f18aa}
 let D=null;
 const content=document.getElementById('content');
 const MONTHS_ALL=['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
-let MONTHS=MONTHS_ALL.slice(0,9),NM=9,YEAR=2026;
+let MONTHS=MONTHS_ALL.slice(0,9),NM=9,NMD=9,DM=9,YEAR=2026;
 function periodLabel(){return `${MONTHS[0]}–${MONTHS[NM-1]} ${YEAR}`}
-function applyMonths(){const wasEnd=st.m1===NM-1;
-  const n=(D.months&&D.months.length)||((D.clients[0]&&D.clients[0].mr||[]).length)||9;
-  NM=n;MONTHS=D.months&&D.months.length?D.months.slice():MONTHS_ALL.slice(0,n);YEAR=D.year||2026;
-  if(wasEnd||st.m1>NM-1)st.m1=NM-1;if(st.m0>st.m1)st.m0=0;
+/* normalisasi dataset: array bulanan 12 bulan + dataMonths (kompatibel dengan dataset lama 9 bulan) */
+function normalizeDataset(d){if(!d||!d.clients)return d;const pad=a=>{a=(a||[]).slice(0,12);while(a.length<12)a.push(0);return a};
+  let mx=0;d.clients.forEach(c=>{['mr','md','mro','mdo'].forEach(k=>{c[k]=pad(c[k]);c[k].forEach((v,i)=>{if(v)mx=Math.max(mx,i+1)})});
+    c.mc=c.mc||{};CATS.forEach(([k])=>{const m=c.mc[k]||[[],[]];c.mc[k]=[pad(m[0]),pad(m[1])]});c.dep=c.dep||[0,0];c.ios=c.ios||[]});
+  if(!d.dataMonths)d.dataMonths=Math.max(1,mx||((d.months||[]).length)||9);d.months=MONTHS_ALL.slice();return d}
+function applyMonths(){DM=Math.min(12,Math.max(1,D.dataMonths||9));YEAR=D.year||2026;SEGS=[...new Set(D.clients.map(c=>c.seg).filter(Boolean))].sort();
+  if(st.pe==null||st.pe<0||st.pe>11)st.pe=DM-1;
+  NM=st.pe+1;NMD=Math.min(NM,DM);MONTHS=MONTHS_ALL.slice(0,NM);
+  if(st.m1==null||st.m1>NM-1||st.m1Auto!==false)st.m1=NM-1;if(st.m0>st.m1)st.m0=0;
   const pc=document.getElementById('periodChip'),ps=document.getElementById('periodSub');
-  if(pc)pc.textContent='YTD '+periodLabel();if(ps)ps.textContent='Rekap GPM SAP vs OPS · '+periodLabel()}
+  if(pc){pc.textContent='YTD '+periodLabel()+(NM>DM?' · data tersedia s.d. '+MONTHS_ALL[DM-1]:'');pc.className='chip '+(NM>DM?'warn':'gold')}
+  if(ps)ps.textContent='Rekap GPM SAP vs OPS · '+periodLabel()}
 const CATS=[['jasnaker','Jasa Tenaga Kerja (Direct Labor)'],['jarkom','Jaringan & Telekomunikasi'],['gedung','Mandatory Gedung (Fasilitas)'],['kpk','Kerja Sama Pihak Ketiga (Vendor)'],['lain','Beban Lain-lain'],['other','Beban Marketing']];
-const SEGS=['Segment 1','Segment 2','Segment 3'];
+let SEGS=['Segment 1','Segment 2','Segment 3'];
 const PAGES=[
  ['ringkasan','01','Executive Summary','Ringkasan'],
  ['kinerja','02','Financial Performance Overview','Analisis'],
@@ -373,7 +380,7 @@ const PAGES=[
  ['kamus','12','KPI Dictionary & Panduan','Data']];
 if(window.Chart){Chart.defaults.font.family='"IBM Plex Sans",system-ui,sans-serif';}
 const LS={get(k,d){try{const v=localStorage.getItem('pge:'+k);return v?JSON.parse(v):d}catch(e){return d}},set(k,v){try{localStorage.setItem('pge:'+k,JSON.stringify(v))}catch(e){}}};
-const st={src:'sap',seg:'all',sl:'all',cust:'all',target:45,m0:0,m1:8,hb:15,bb:15,page:'ringkasan',sort:{k:'gp',d:-1},q:''};
+const st={pe:null,m1Auto:true,src:'sap',seg:'all',sl:'all',cust:'all',target:45,m0:0,m1:8,hb:15,bb:15,page:'ringkasan',sort:{k:'gp',d:-1},q:''};
 let DATA={clients:[],origin:'file'};
 const charts={};
 /* ---------- formatting ---------- */
@@ -394,9 +401,10 @@ function toast(m){const t=document.getElementById('toast');t.textContent=m;t.hid
 /* ---------- model ---------- */
 function cv(c,srcOverride){
   const s=(srcOverride||st.src)==='sap'?0:1;
-  const rev=s?c.ro:c.rs, dir=s?c.do:c.ds, dep=(c.dep||[0,0])[s]||0;
+  const cut=a=>{let t=0;if(a)for(let i=0;i<NM&&i<a.length;i++)t+=a[i]||0;return t};
+  const rev=cut(s?c.mro:c.mr), dir=cut(s?c.mdo:c.md), dep=((c.dep||[0,0])[s]||0)*(DM?NMD/DM:1);
   const cats={};let known=0;
-  for(const [k] of CATS){const v=c.cat&&c.cat[k]?c.cat[k][s]:0;cats[k]=v;known+=v}
+  for(const [k] of CATS){const v=c.mc&&c.mc[k]?cut(c.mc[k][s]):(c.cat&&c.cat[k]?c.cat[k][s]:0);cats[k]=v;known+=v}
   cats.other+=dir-known; /* selisih (bila ada) dimasukkan ke Marketing/lainnya */
   const gp=rev-dir;
   return {n:c.n,seg:c.seg||'',sl:c.sl,svc:c.svc||[],rev,dir,dep,gp,gpm:rev>0?gp/rev:null,contrib:gp-dep,cats,raw:c};
@@ -411,13 +419,16 @@ function pstatus(x){const T=st.target/100,hb=st.hb/100,bb=st.bb/100;
   if(x.gpm>=T-bb)return['Below Target','st-bt'];
   return['Low Margin','st-lo']}
 function monthly(F,src){const o=(src||st.src)==='ops';const rev=Array(NM).fill(0),dir=Array(NM).fill(0);
-  F.forEach(x=>{const c=x.raw;((o?c.mro:c.mr)||[]).forEach((v,i)=>rev[i]+=v);((o?c.mdo:c.md)||[]).forEach((v,i)=>dir[i]+=v)});
+  F.forEach(x=>{const c=x.raw;((o?c.mro:c.mr)||[]).slice(0,NM).forEach((v,i)=>rev[i]+=v);((o?c.mdo:c.md)||[]).slice(0,NM).forEach((v,i)=>dir[i]+=v)});
   return{rev,dir,gp:rev.map((v,i)=>v-dir[i])}}
 function monthCats(F,src){const s=(src||st.src)==='ops'?1:0;const out={};
-  for(const[k]of CATS){const arr=Array(NM).fill(0);F.forEach(x=>{const m=x.raw.mc&&x.raw.mc[k];if(m)m[s].forEach((v,i)=>arr[i]+=v)});out[k]=arr}return out}
+  for(const[k]of CATS){const arr=Array(NM).fill(0);F.forEach(x=>{const m=x.raw.mc&&x.raw.mc[k];if(m)m[s].slice(0,NM).forEach((v,i)=>arr[i]+=v)});out[k]=arr}return out}
 /* OKR targets (sheet OKR): q3 = target s.d. Q3 (Jan–Sep), q4 = target s.d. Q4 (setahun) */
-function okrScope(){if(DATA.origin!=='file'||st.sl!=='all'||st.cust!=='all')return null;const segs=st.seg==='all'?SEGS:[st.seg];const T=D.targets||{};
-  const r={q3:{rev:0,dir:0,gp:0},q4:{rev:0,dir:0,gp:0},segs};segs.forEach(s=>{if(!T[s])return;['q3','q4'].forEach(q=>{['rev','dir','gp'].forEach(k=>r[q][k]+=T[s][q][k]||0)})});
+/* target s.d. periode terpilih: ≤ Sep = Target Q3 × bulan/9; Okt–Des = interpolasi Target Q3 → Target Q4 */
+function okrT(t){const q3=t.q3||{},q4=t.q4||q3,f=k=>NM<=9?(q3[k]||0)*NM/9:(q3[k]||0)+((q4[k]||0)-(q3[k]||0))*(NM-9)/3;const o={rev:f('rev'),dir:f('dir'),gp:f('gp')};o.gpm=o.rev?o.gp/o.rev:null;return{q3:o,q4}}
+function okrLabel(){return NM===9?'s.d. Q3':NM===12?'s.d. Q4 (setahun)':'s.d. '+MONTHS[NM-1]+(NM<9?' (prorata Q3)':' (interpolasi Q3→Q4)')}
+function okrScope(){if(st.sl!=='all'||st.cust!=='all')return null;const segs=st.seg==='all'?SEGS:[st.seg];const T=D.targets||{};if(!segs.some(s=>T[s]))return null;
+  const r={q3:{rev:0,dir:0,gp:0},q4:{rev:0,dir:0,gp:0},segs};segs.forEach(s=>{if(!T[s])return;const t=okrT(T[s]);['q3','q4'].forEach(q=>{['rev','dir','gp'].forEach(k=>r[q][k]+=t[q][k]||0)})});
   r.q3.gpm=r.q3.rev?r.q3.gp/r.q3.rev:null;r.q4.gpm=r.q4.rev?r.q4.gp/r.q4.rev:null;return r}
 /* ---------- charts ---------- */
 function palette(){return[css('--c1'),css('--c2'),css('--c3'),css('--c4'),css('--c5'),css('--c6'),css('--c7')]}
@@ -444,6 +455,7 @@ function buildFilters(){
   const cs=DATA.clients.filter(c=>(st.seg==='all'||c.seg===st.seg)&&(st.sl==='all'||c.sl===st.sl)).map(c=>c.n).sort((a,b)=>a.localeCompare(b));
   if(st.cust!=='all'&&!cs.includes(st.cust))st.cust='all';
   fCust.innerHTML='<option value="all">Semua layanan</option>'+cs.map(s=>`<option ${s===st.cust?'selected':''}>${esc(s)}</option>`).join('');
+  fPe.innerHTML=MONTHS_ALL.map((m,i)=>`<option value="${i}" ${i===st.pe?'selected':''}>${m} ${YEAR}${i>=DM?' (belum ada data)':''}</option>`).join('');
   fM0.innerHTML=MONTHS.map((m,i)=>`<option value="${i}" ${i===st.m0?'selected':''}>${m}</option>`).join('');
   fM1.innerHTML=MONTHS.map((m,i)=>`<option value="${i}" ${i===st.m1?'selected':''}>${m}</option>`).join('');
   fTarget.value=st.target;srcSap.classList.toggle('on',st.src==='sap');srcOps.classList.toggle('on',st.src==='ops');
@@ -465,7 +477,7 @@ function render(){
 function kpi(l,v,f,s,cls,bar){return `<div class="kpi ${cls||''}"><div class="kl"><span>${l}</span></div><div class="kv">${v}</div>${f?`<div class="kf">${f}</div>`:''}${bar!=null?`<div class="bar-mini"><i style="width:${Math.max(0,Math.min(100,bar))}%"></i></div>`:''}${s?`<div class="ks">${s}</div>`:''}</div>`}
 function delta(a,b,goodUp=true){if(b==null||a==null)return'';const d=a-b;const good=goodUp?d>=0:d<=0;return `<span class="chip ${Math.abs(d)<1?'neu':good?'pos':'neg'}">${d>=0?'▲':'▼'} ${rc(Math.abs(d))} vs ${st.src==='sap'?'OPS':'SAP'}</span>`}
 function statusPill(x){const [t,c]=pstatus(x);return `<span class="pill ${c}">${t}</span>`}
-function noteMonthly(){return `<p class="hint">Angka bulanan dari rincian per bulan di sheet <i>GPM</i> (${st.src.toUpperCase()}); jumlah ${MONTHS[0]}–${MONTHS[NM-1]} sama dengan YTD.</p>`}
+function noteMonthly(){return `<p class="hint">Angka bulanan dari rincian per bulan di sheet <i>GPM</i> (${st.src.toUpperCase()}); periode ${periodLabel()}${NM>DM?'; bulan '+MONTHS_ALL[DM]+'–'+MONTHS[NM-1]+' belum ada data':''}.</p>`}
 function exportBtn(id,label){return `<button class="btn sm" type="button" data-exp="${id}">${label||'Export'}</button>`}
 const EXPORTS={};
 function regExport(id,name,rows){EXPORTS[id]={name,rows}}
@@ -533,10 +545,10 @@ function insights(F){
   // 8 OKR achievement
   const ok=okrScope();
   if(ok&&ok.q3.rev){const ach=A.rev/ok.q3.rev,achGp=ok.q3.gp?A.gp/ok.q3.gp:null;
-    const per=ok.segs.map(s=>{const t=D.targets[s];const a=agg(F.filter(x=>x.seg===s));return t?`${s}: revenue ${pc(a.rev/t.q3.rev)} dari target, GPM ${pc(a.gpm)} vs target ${pc(t.q3.gpm)}`:''}).filter(Boolean);
-    out.push({sev:ach>=1&&(achGp==null||achGp>=1)?'ok':'md',title:`Revenue YTD mencapai ${pc(ach)} dari target OKR s.d. Q3; gross profit ${pc(achGp)}`,
-      data:`Target OKR s.d. Q3: revenue ${rc(ok.q3.rev)}, GP ${rc(ok.q3.gp)} (GPM ${pc(ok.q3.gpm)}). Aktual ${st.src.toUpperCase()}: revenue ${rc(A.rev)}, GP ${rc(A.gp)}. ${per.join(' · ')}.`,
-      hyp:'Kolom "Target Q3" di sheet OKR dibaca sebagai target kumulatif Jan–Sep dan "Target Q4" sebagai target setahun. Bila definisinya berbeda (mis. target per kuartal), persentase capaian perlu dihitung ulang.',
+    const per=ok.segs.map(s=>{const t=D.targets[s];const a=agg(F.filter(x=>x.seg===s));if(!t)return'';const tt=okrT(t).q3;return `${s}: revenue ${pc(a.rev/tt.rev)} dari target, GPM ${pc(a.gpm)} vs target ${pc(tt.gpm)}`}).filter(Boolean);
+    out.push({sev:ach>=1&&(achGp==null||achGp>=1)?'ok':'md',title:`Revenue YTD mencapai ${pc(ach)} dari target OKR ${okrLabel()}; gross profit ${pc(achGp)}`,
+      data:`Target OKR ${okrLabel()}: revenue ${rc(ok.q3.rev)}, GP ${rc(ok.q3.gp)} (GPM ${pc(ok.q3.gpm)}). Aktual ${st.src.toUpperCase()}: revenue ${rc(A.rev)}, GP ${rc(A.gp)}. ${per.join(' · ')}.`,
+      hyp:'Kolom "Target Q3" di sheet OKR dibaca sebagai target kumulatif Jan–Sep dan "Target Q4" sebagai target setahun; periode lain diprorata/diinterpolasi. Bila definisinya berbeda (mis. target per kuartal), persentase capaian perlu dihitung ulang.',
       impact:`Sisa target setahun (Q4): revenue ${rc(Math.max(0,ok.q4.rev-A.rev))}, GP ${rc(Math.max(0,ok.q4.gp-A.gp))} untuk Okt–Des.`,
       rec:'Pastikan accrue revenue N+1 dan BAPP tepat waktu agar pengakuan pendapatan Q4 tidak tertunda; fokus perbaikan GPM pada segmen yang di bawah target.',pic:'Head of Segment & Finance',due:'31 Des 2026'})}
   // 9 data quality: rekap GPM vs ledger PVT, IO BLOCK
@@ -563,7 +575,7 @@ document.addEventListener('change',e=>{if(e.target.dataset.ins){LS.set(e.target.
 /* ---------- VIEWS ---------- */
 const VIEWS={};
 VIEWS.ringkasan={html(F){const A=agg(F),O=agg(filtered(st.src==='sap'?'ops':'sap'));const T=st.target/100;
-  const proj=A.rev/NM*12, lossN=F.filter(x=>pstatus(x)[0]==='Loss Making').length,belowN=F.filter(x=>x.gpm!=null&&x.gpm<T).length;
+  const proj=A.rev/NMD*12, lossN=F.filter(x=>pstatus(x)[0]==='Loss Making').length,belowN=F.filter(x=>x.gpm!=null&&x.gpm<T).length;
   const bud=LS.get('budget',null);const ok=okrScope();
   return `
   <section class="kpis">
@@ -574,8 +586,8 @@ VIEWS.ringkasan={html(F){const A=agg(F),O=agg(filtered(st.src==='sap'?'ops':'sap
     ${kpi('Depresiasi (D&A)',rc(A.dep),'dari ledger per IO','<span class="chip">Amortisasi: tidak ada di data</span>')}
     ${kpi('Laba setelah D&A',rc(A.contrib),'Gross Profit − D&A, sebelum OPEX',`<span class="chip">Margin ${pc(A.rev?A.contrib/A.rev:null)}</span>`)}
     ${kpi('EBITDA & Net Profit','Belum tersedia','OPEX, bunga & pajak tidak ada di file','<span class="chip warn">Isi OPEX di Simulator</span>','na')}
-    ${ok&&ok.q3.rev?kpi('Capaian Target OKR',pc(A.rev/ok.q3.rev),'Revenue vs target s.d. Q3 '+rc(ok.q3.rev),'<span class="chip '+(A.gp>=ok.q3.gp?'pos':'neg')+'">GP '+pc(A.gp/ok.q3.gp)+' dari target</span><span class="chip">'+lossN+' rugi · '+belowN+' di bawah target</span>','',A.rev/ok.q3.rev*100)
-      :kpi('Budget Achievement',bud&&bud.rev?pc(A.rev/(bud.rev*NM/12)):'Target OKR per segmen',bud&&bud.rev?'Revenue vs anggaran prorata '+NM+' bulan':'Target OKR hanya berlaku di level segmen; isi anggaran kustom di modul 07','<span class="chip">'+lossN+' rugi · '+belowN+' di bawah target</span>',bud&&bud.rev?'':'na')}
+    ${ok&&ok.q3.rev?kpi('Capaian Target OKR',pc(A.rev/ok.q3.rev),'Revenue vs target '+okrLabel()+' '+rc(ok.q3.rev),'<span class="chip '+(A.gp>=ok.q3.gp?'pos':'neg')+'">GP '+pc(A.gp/ok.q3.gp)+' dari target</span><span class="chip">'+lossN+' rugi · '+belowN+' di bawah target</span>','',A.rev/ok.q3.rev*100)
+      :kpi('Budget Achievement',bud&&bud.rev?pc(A.rev/(bud.rev*NMD/12)):'Target OKR per segmen',bud&&bud.rev?'Revenue vs anggaran prorata '+NMD+' bulan':'Target OKR hanya berlaku di level segmen; isi anggaran kustom di modul 07','<span class="chip">'+lossN+' rugi · '+belowN+' di bawah target</span>',bud&&bud.rev?'':'na')}
   </section>
   <div class="grid g-75">
     <section class="panel"><div class="ph"><div><h3>Laba kotor per layanan</h3><p class="hint">10 teratas berdasarkan laba kotor, warna menunjukkan status terhadap target GPM.</p></div><a class="btn sm" href="#kontrak">Lihat semua kontrak</a></div><div class="cv h340"><canvas id="cTopGp"></canvas></div></section>
@@ -603,7 +615,7 @@ VIEWS.ringkasan={html(F){const A=agg(F),O=agg(filtered(st.src==='sap'?'ops':'sap
 
 VIEWS.kinerja={html(F){const M=monthly(F);const a=st.m0,b=Math.max(st.m0,st.m1);
   let rows='',best=null,worst=null,flags=[];
-  for(let i=a;i<=b;i++){const r=M.rev[i],d=M.dir[i],g=M.gp[i];const gr=i>0&&M.rev[i-1]?r/M.rev[i-1]-1:null,gc=i>0&&M.dir[i-1]?d/M.dir[i-1]-1:null;
+  for(let i=a;i<=b;i++){if(i>=DM){rows+=`<tr><td>${MONTHS[i]} ${YEAR}</td><td class="n mut">–</td><td></td><td class="n mut">–</td><td></td><td class="n mut">–</td><td></td><td></td><td><span class="pill st-pr">Belum ada data</span></td></tr>`;continue}const r=M.rev[i],d=M.dir[i],g=M.gp[i];const gr=i>0&&M.rev[i-1]?r/M.rev[i-1]-1:null,gc=i>0&&M.dir[i-1]?d/M.dir[i-1]-1:null;
     const gpm=r>0?g/r:null,pg=i>0&&M.rev[i-1]>0?M.gp[i-1]/M.rev[i-1]:null;const flag=gr!=null&&gc!=null&&gc>gr+.1&&gc>0;if(flag)flags.push(MONTHS[i]);
     if(!best||g>best[1])best=[MONTHS[i],g];if(!worst||g<worst[1])worst=[MONTHS[i],g];
     rows+=`<tr><td>${MONTHS[i]} ${YEAR}</td><td class="n">${rp(r)}</td><td class="n ${gr==null?'':gr>=0?'pos':'neg'}">${pc(gr,1)}</td><td class="n">${rp(d)}</td><td class="n ${gc==null?'':gc<=0?'pos':'neg'}">${pc(gc,1)}</td><td class="n">${rp(g)}</td><td class="n">${pc(gpm)}</td><td class="n">${gpm!=null&&pg!=null?pp(gpm-pg):'–'}</td><td>${flag?'<span class="pill st-bt">Biaya > pendapatan</span>':''}</td></tr>`}
@@ -656,7 +668,7 @@ VIEWS['pendapatan-biaya']={html(F){const A=agg(F);
       <div class="kv-list"><span>Biaya tetap</span><span class="v">${rc(fixed)} · ${pc((fixed)/(A.dir+A.dep))}</span><span>Biaya variabel</span><span class="v">${rc(variable)} · ${pc(variable/(A.dir+A.dep))}</span></div></section>
     <section class="panel"><h3>Cost per Agent & per Interaction</h3><div class="empty"><h3>Data operasional belum tersedia</h3><p>File tidak memuat jumlah FTE, jam produktif, atau volume interaksi. Isi sheet <b>Operational Metrics</b> pada template upload, atau gunakan kalkulator di modul 08.</p><a class="btn sm" href="#contact-center">Buka kalkulator</a></div></section>
     <section class="panel"><h3>Rata-rata per bulan</h3><div class="kv-list">
-      <span>Revenue / bulan</span><span class="v">${rc(A.rev/NM)}</span><span>Direct cost / bulan</span><span class="v">${rc(A.dir/NM)}</span><span>Gross profit / bulan</span><span class="v">${rc(A.gp/NM)}</span>
+      <span>Revenue / bulan</span><span class="v">${rc(A.rev/NMD)}</span><span>Direct cost / bulan</span><span class="v">${rc(A.dir/NMD)}</span><span>Gross profit / bulan</span><span class="v">${rc(A.gp/NMD)}</span>
       <span>Revenue / layanan</span><span class="v">${rc(F.length?A.rev/F.length:0)}</span><span>Direct cost / layanan</span><span class="v">${rc(F.length?A.dir/F.length:0)}</span><span>Biaya tenaga kerja / revenue</span><span class="v">${pc(A.rev?A.cats.jasnaker/A.rev:null)}</span><span>Biaya jaringan / revenue</span><span class="v">${pc(A.rev?A.cats.jarkom/A.rev:null)}</span></div></section>
   </div>`},
  after(F){const P=palette();const A=agg(F);
@@ -673,7 +685,7 @@ VIEWS['pendapatan-biaya']={html(F){const A=agg(F);
  }};
 
 VIEWS.kontrak={html(F){const T=st.target/100;
-  const rows=F.map(x=>{const o=cv(x.raw,st.src==='sap'?'ops':'sap');return{...x,var:x.gpm!=null?x.gpm-T:null,ogpm:o.gpm,gapGpm:x.gpm!=null&&o.gpm!=null?x.gpm-o.gpm:null,st:pstatus(x)[0],mrev:x.rev/NM}});
+  const rows=F.map(x=>{const o=cv(x.raw,st.src==='sap'?'ops':'sap');return{...x,var:x.gpm!=null?x.gpm-T:null,ogpm:o.gpm,gapGpm:x.gpm!=null&&o.gpm!=null?x.gpm-o.gpm:null,st:pstatus(x)[0],mrev:x.rev/NMD}});
   const q=st.q.toLowerCase();const R=rows.filter(r=>!q||r.n.toLowerCase().includes(q)||r.svc.join(' ').toLowerCase().includes(q));
   const k=st.sort.k,d=st.sort.d;R.sort((a,b)=>{const va=a[k],vb=b[k];if(typeof va==='string')return d*va.localeCompare(vb);return d*((va??-1e18)-(vb??-1e18))});
   const counts={};rows.forEach(r=>counts[r.st]=(counts[r.st]||0)+1);
@@ -687,7 +699,7 @@ VIEWS.kontrak={html(F){const T=st.target/100;
     <div style="display:flex;gap:8px;flex-wrap:wrap"><input type="search" id="q" placeholder="Cari layanan / IO" value="${esc(st.q)}" style="width:220px">${exportBtn('kontrak')}</div></div>
   <div class="tw" style="max-height:620px"><table><thead><tr>${H('n','Layanan')}${H('seg','Segmen')}${H('sl','Service line')}${H('rev','Revenue',1)}${H('mrev','Rev / bln',1)}${H('dir','Direct Cost',1)}${H('dep','D&A',1)}${H('gp','Gross Profit',1)}${H('contrib','Laba stlh D&A',1)}${H('gpm','GPM',1)}<th class="n">Target</th>${H('var','Variance',1)}${H('gapGpm','Δ vs '+(st.src==='sap'?'OPS':'SAP'),1)}${H('st','Status')}</tr></thead>
   <tbody>${R.map(r=>`<tr class="click" data-cl="${esc(r.n)}" tabindex="0"><td class="wrap" style="min-width:160px;max-width:220px"><b>${esc(r.n)}</b><br><span class="mut" style="font-size:11.5px">${r.svc.length} IO${r.raw.blocked?' · '+r.raw.blocked+' BLOCK/CHURN':''}</span></td><td>${esc(r.seg)}</td><td>${esc(r.sl)}</td><td class="n" title="${rp(r.rev)}">${rc(r.rev)}</td><td class="n">${rc(r.mrev)}</td><td class="n" title="${rp(r.dir)}">${rc(r.dir)}</td><td class="n">${r.dep?rc(r.dep):'–'}</td><td class="n ${r.gp<0?'neg':''}" title="${rp(r.gp)}">${rc(r.gp)}</td><td class="n">${rc(r.contrib)}</td><td class="n">${pc(r.gpm)}</td><td class="n mut">${pc(T)}</td><td class="n ${r.var==null?'':r.var>=0?'pos':'neg'}">${pp(r.var)}</td><td class="n ${r.gapGpm==null?'':r.gapGpm>=0?'pos':'neg'}">${pp(r.gapGpm)}</td><td>${statusPill(r)}</td></tr>`).join('')||'<tr><td colspan="14" class="mut">Tidak ada data untuk filter ini.</td></tr>'}</tbody>
-  <tfoot><tr><td>Total (${R.length})</td><td></td><td></td><td class="n">${rc(A.rev)}</td><td class="n">${rc(A.rev/NM)}</td><td class="n">${rc(A.dir)}</td><td class="n">${rc(A.dep)}</td><td class="n">${rc(A.gp)}</td><td class="n">${rc(A.contrib)}</td><td class="n">${pc(A.gpm)}</td><td class="n">${pc(T)}</td><td class="n">${pp(A.gpm!=null?A.gpm-T:null)}</td><td></td><td></td></tr></tfoot></table></div></section>`},
+  <tfoot><tr><td>Total (${R.length})</td><td></td><td></td><td class="n">${rc(A.rev)}</td><td class="n">${rc(A.rev/NMD)}</td><td class="n">${rc(A.dir)}</td><td class="n">${rc(A.dep)}</td><td class="n">${rc(A.gp)}</td><td class="n">${rc(A.contrib)}</td><td class="n">${pc(A.gpm)}</td><td class="n">${pc(T)}</td><td class="n">${pp(A.gpm!=null?A.gpm-T:null)}</td><td></td><td></td></tr></tfoot></table></div></section>`},
  after(){q.addEventListener('input',e=>{st.q=e.target.value;const pos=e.target.selectionStart;render();const n=document.getElementById('q');n.focus();n.setSelectionRange(pos,pos)});
   document.querySelectorAll('[data-sort]').forEach(th=>th.addEventListener('click',()=>{const k=th.dataset.sort;st.sort=st.sort.k===k?{k,d:-st.sort.d}:{k,d:-1};render()}));
   hb.addEventListener('change',e=>{st.hb=+e.target.value||0;render()});bb.addEventListener('change',e=>{st.bb=+e.target.value||0;render()});
@@ -710,7 +722,7 @@ function drill(name){const c=DATA.clients.find(x=>x.n===name);if(!c)return;const
   dlg.showModal();const P=palette();
   const lab=CATS.map(([k,l])=>l.replace(/ \(.+\)/,''));
   mk('dCat',{type:'bar',data:{labels:lab,datasets:[{label:'SAP',data:CATS.map(([k])=>s.cats[k]),backgroundColor:P[0],borderRadius:3},{label:'OPS',data:CATS.map(([k])=>o.cats[k]),backgroundColor:P[1],borderRadius:3}]},options:baseOpts({indexAxis:'y',plugins:{legend:{position:'bottom',labels:{color:css('--muted'),usePointStyle:true,boxWidth:8}},tooltip:{callbacks:{label:c=>' '+c.dataset.label+': '+rp(c.parsed.x)}}},scales:{x:{ticks:{color:css('--muted'),callback:v=>rc(v).replace('Rp ','')},grid:{color:css('--line')}},y:{ticks:{color:css('--ink'),font:{size:11}},grid:{display:false}}}})});
-  mk('dMon',{type:'bar',data:{labels:MONTHS,datasets:[{label:'Revenue SAP',data:c.mr||[],backgroundColor:P[0],borderRadius:3},{label:'Direct Cost SAP',data:c.md||[],backgroundColor:P[5],borderRadius:3},{type:'line',label:'Revenue OPS',data:c.mro||[],borderColor:P[1],backgroundColor:P[1],pointRadius:3,tension:.25},{type:'line',label:'Direct Cost OPS',data:c.mdo||[],borderColor:P[4],backgroundColor:P[4],pointRadius:3,borderDash:[4,3],tension:.25}]},options:baseOpts({plugins:{legend:{position:'bottom',labels:{color:css('--muted'),usePointStyle:true,boxWidth:8}},tooltip:{callbacks:{label:tipRp}}}})});
+  mk('dMon',{type:'bar',data:{labels:MONTHS,datasets:[{label:'Revenue SAP',data:(c.mr||[]).slice(0,NM),backgroundColor:P[0],borderRadius:3},{label:'Direct Cost SAP',data:(c.md||[]).slice(0,NM),backgroundColor:P[5],borderRadius:3},{type:'line',label:'Revenue OPS',data:(c.mro||[]).slice(0,NM),borderColor:P[1],backgroundColor:P[1],pointRadius:3,tension:.25},{type:'line',label:'Direct Cost OPS',data:(c.mdo||[]).slice(0,NM),borderColor:P[4],backgroundColor:P[4],pointRadius:3,borderDash:[4,3],tension:.25}]},options:baseOpts({plugins:{legend:{position:'bottom',labels:{color:css('--muted'),usePointStyle:true,boxWidth:8}},tooltip:{callbacks:{label:tipRp}}}})});
 }
 dlgX.addEventListener('click',()=>{dlg.close()});dlg.addEventListener('close',()=>{['dCat','dMon'].forEach(k=>{if(charts[k]){charts[k].destroy();delete charts[k]}})});
 
@@ -776,18 +788,18 @@ VIEWS.biaya={html(F){const A=agg(F);
  }};
 
 VIEWS.anggaran={html(F){const A=agg(F);const S=agg(filtered('sap')),O=agg(filtered('ops'));const b=LS.get('budget',{rev:'',dir:'',gp:''});
-  const pr=NM/12;const hasB=+b.rev>0;
+  const pr=NMD/12;const hasB=+b.rev>0;
   const row=(l,act,bud,goodUp)=>{if(!(+bud))return `<tr><td>${l}</td><td class="n">${rp(act)}</td><td class="n mut">–</td><td class="n mut">–</td><td class="n mut">–</td><td class="n mut">–</td><td></td></tr>`;
     const bp=bud*pr,v=act-bp,fav=goodUp?v>=0:v<=0;return `<tr><td>${l}</td><td class="n">${rp(act)}</td><td class="n">${rp(bp)}</td><td class="n ${fav?'pos':'neg'}">${rp(v)}</td><td class="n">${pc(bp?v/bp:null,1)}</td><td class="n">${pc(bp?act/bp:null)}</td><td><span class="pill ${fav?'st-hi':'st-ls'}">${fav?'Favorable':'Unfavorable'}</span></td></tr>`};
   const vr=(l,a,o,goodUp)=>{const v=a-o,fav=goodUp?v>=0:v<=0;return `<tr><td>${l}</td><td class="n">${rp(a)}</td><td class="n">${rp(o)}</td><td class="n ${Math.abs(v)<1?'':fav?'pos':'neg'}">${rp(v)}</td><td class="n">${pc(o?v/o:null,1)}</td><td>${Math.abs(v)<1?'<span class="pill st-pr">Sama</span>':`<span class="pill ${fav?'st-hi':'st-ls'}">${fav?'Favorable':'Unfavorable'}</span>`}</td></tr>`};
   const T=D.targets||{};const ok=okrScope();
-  const okRow=(s,a,t)=>{const q3=t.q3,q4=t.q4;const gpm=a.rev?a.gp/a.rev:null;return `<tr${st.seg===s?' style="background:var(--gold-soft)"':''}><td><b>${esc(s)}</b></td><td class="n">${rc(q3.rev)}</td><td class="n">${rc(a.rev)}</td><td class="n ${a.rev>=q3.rev?'pos':'neg'}">${pc(a.rev/q3.rev)}</td><td class="n">${rc(q3.gp)}</td><td class="n">${rc(a.gp)}</td><td class="n ${a.gp>=q3.gp?'pos':'neg'}">${pc(q3.gp?a.gp/q3.gp:null)}</td><td class="n">${pc(q3.gpm)}</td><td class="n ${gpm!=null&&gpm>=q3.gpm?'pos':'neg'}">${pc(gpm)}</td><td class="n">${rc(q4.rev)}</td><td class="n">${pc(a.rev/NM*12/q4.rev)}</td></tr>`};
-  const okSegs=DATA.origin==='file'?SEGS.filter(s=>T[s]).map(s=>{const a=agg(DATA.clients.filter(c=>c.seg===s).map(c=>cv(c)));return okRow(s,a,T[s])}).join(''):'';
-  const allA=agg(DATA.clients.map(c=>cv(c)));const tq={q3:{rev:0,gp:0,dir:0},q4:{rev:0,gp:0,dir:0}};SEGS.forEach(s=>{if(T[s])['q3','q4'].forEach(q=>['rev','gp','dir'].forEach(k=>tq[q][k]+=T[s][q][k]))});tq.q3.gpm=tq.q3.gp/tq.q3.rev;tq.q4.gpm=tq.q4.gp/tq.q4.rev;
-  return `${DATA.origin==='file'&&st.sl==='all'&&st.cust==='all'?`<section class="panel"><div class="ph"><div><h3>Target OKR vs Aktual (${st.src.toUpperCase()})</h3><p class="hint">Dari sheet <b>OKR</b>. "Target Q3" dibaca sebagai target kumulatif Jan–Sep (dibandingkan langsung dengan YTD ${MONTHS[NM-1]}); "Target Q4" sebagai target setahun, dibandingkan dengan proyeksi run-rate. Baris yang disorot = segmen terfilter.</p></div>${exportBtn('okr')}</div>
-   <div class="tw"><table><thead><tr><th>Segmen</th><th class="n">Target Rev Q3</th><th class="n">Aktual Rev</th><th class="n">Capaian</th><th class="n">Target GP Q3</th><th class="n">Aktual GP</th><th class="n">Capaian</th><th class="n">Target GPM</th><th class="n">GPM aktual</th><th class="n">Target Rev FY (Q4)</th><th class="n">Run-rate vs FY</th></tr></thead>
+  const okRow=(s,a,t)=>{const q3=t.q3,q4=t.q4||t.q3;const gpm=a.rev?a.gp/a.rev:null;return `<tr${st.seg===s?' style="background:var(--gold-soft)"':''}><td><b>${esc(s)}</b></td><td class="n">${rc(q3.rev)}</td><td class="n">${rc(a.rev)}</td><td class="n ${a.rev>=q3.rev?'pos':'neg'}">${pc(a.rev/q3.rev)}</td><td class="n">${rc(q3.gp)}</td><td class="n">${rc(a.gp)}</td><td class="n ${a.gp>=q3.gp?'pos':'neg'}">${pc(q3.gp?a.gp/q3.gp:null)}</td><td class="n">${pc(q3.gpm)}</td><td class="n ${gpm!=null&&gpm>=q3.gpm?'pos':'neg'}">${pc(gpm)}</td><td class="n">${rc(q4.rev)}</td><td class="n">${pc(a.rev/NMD*12/q4.rev)}</td></tr>`};
+  const okSegs=SEGS.filter(s=>T[s]).map(s=>{const a=agg(DATA.clients.filter(c=>c.seg===s).map(c=>cv(c)));return okRow(s,a,okrT(T[s]))}).join('');
+  const allA=agg(DATA.clients.map(c=>cv(c)));const tq={q3:{rev:0,gp:0,dir:0},q4:{rev:0,gp:0,dir:0}};SEGS.forEach(s=>{if(T[s]){const t=okrT(T[s]);['q3','q4'].forEach(q=>['rev','gp','dir'].forEach(k=>tq[q][k]+=t[q][k]||0))}});tq.q3.gpm=tq.q3.gp/tq.q3.rev;tq.q4.gpm=tq.q4.gp/tq.q4.rev;
+  return `${st.sl==='all'&&st.cust==='all'&&SEGS.some(s=>T[s])?`<section class="panel"><div class="ph"><div><h3>Target OKR vs Aktual (${st.src.toUpperCase()})</h3><p class="hint">Dari sheet <b>OKR</b>. Target periode = target ${okrLabel()}: "Target Q3" = kumulatif Jan–Sep, "Target Q4" = setahun; bulan sebelum Sep diprorata, Okt–Nov diinterpolasi. Kolom FY dibandingkan dengan proyeksi run-rate. Baris yang disorot = segmen terfilter.</p></div>${exportBtn('okr')}</div>
+   <div class="tw"><table><thead><tr><th>Segmen</th><th class="n">Target Rev periode</th><th class="n">Aktual Rev</th><th class="n">Capaian</th><th class="n">Target GP periode</th><th class="n">Aktual GP</th><th class="n">Capaian</th><th class="n">Target GPM</th><th class="n">GPM aktual</th><th class="n">Target Rev FY (Q4)</th><th class="n">Run-rate vs FY</th></tr></thead>
    <tbody>${okSegs}</tbody><tfoot>${okRow('Total G&E',allA,tq).replace(/<tr[^>]*>/,'<tr>')}</tfoot></table></div></section>`:`<div class="callout">Target OKR hanya tersedia per segmen. Kosongkan filter service line dan layanan untuk melihat perbandingan target OKR.</div>`}
-  <div class="empty"><h3>Anggaran kustom (opsional)</h3><p>Masukkan anggaran setahun (FY ${YEAR}) untuk cakupan filter saat ini. Angka disimpan di browser ini saja dan diprorata ${NM}/12 untuk dibandingkan dengan aktual YTD ${MONTHS[NM-1]} ${YEAR}.</p>
+  <div class="empty"><h3>Anggaran kustom (opsional)</h3><p>Masukkan anggaran setahun (FY ${YEAR}) untuk cakupan filter saat ini. Angka disimpan di browser ini saja dan diprorata ${NMD}/12 untuk dibandingkan dengan aktual YTD ${MONTHS[NM-1]} ${YEAR}.</p>
     <div class="filters"><div class="fld"><label for="bRev">Anggaran revenue FY (Rp)</label><input id="bRev" type="number" value="${b.rev}" placeholder="mis. 28000000000"></div>
     <div class="fld"><label for="bDir">Anggaran direct cost FY (Rp)</label><input id="bDir" type="number" value="${b.dir}"></div>
     <div class="fld"><label for="bGp">Target gross profit FY (Rp)</label><input id="bGp" type="number" value="${b.gp}"></div><button class="btn pri" id="bSave" type="button">Simpan anggaran</button><button class="btn" id="bClr" type="button">Hapus</button></div></div>
@@ -798,17 +810,17 @@ VIEWS.anggaran={html(F){const A=agg(F);const S=agg(filtered('sap')),O=agg(filter
   <section class="panel"><h3>SAP vs OPS (dari file)</h3><p class="hint">OPS dipakai sebagai acuan operasional; variance = SAP − OPS. Revenue lebih tinggi = favorable, biaya lebih tinggi = unfavorable.</p>
   <div class="tw"><table><thead><tr><th>Komponen</th><th class="n">SAP</th><th class="n">OPS</th><th class="n">Variance</th><th class="n">%</th><th>Konteks</th></tr></thead><tbody>${vr('Revenue',S.rev,O.rev,true)}${vr('Direct Cost',S.dir,O.dir,false)}${vr('Gross Profit',S.gp,O.gp,true)}
   <tr><td>GPM</td><td class="n">${pc(S.gpm)}</td><td class="n">${pc(O.gpm)}</td><td class="n">${pp(S.gpm!=null&&O.gpm!=null?S.gpm-O.gpm:null)}</td><td></td><td></td></tr></tbody></table></div></section>
-  <section class="panel"><h3>Forecast akhir tahun (run-rate)</h3><p class="hint">Proyeksi FY = YTD ÷ ${NM} bulan × 12. Metode sederhana; tidak memperhitungkan kontrak yang berakhir atau baru.</p>
+  <section class="panel"><h3>Forecast akhir tahun (run-rate)</h3><p class="hint">Proyeksi FY = YTD ÷ ${NMD} bulan berisi data × 12. Metode sederhana; tidak memperhitungkan kontrak yang berakhir atau baru.</p>
    <div class="cv h260"><canvas id="cFc"></canvas></div>
-   <div class="kv-list"><span>Revenue FY proyeksi</span><span class="v">${rc(A.rev/NM*12)}</span><span>Direct cost FY proyeksi</span><span class="v">${rc(A.dir/NM*12)}</span><span>Gross profit FY proyeksi</span><span class="v">${rc(A.gp/NM*12)}</span>${hasB?`<span>Proyeksi vs anggaran revenue</span><span class="v">${pc(A.rev/NM*12/b.rev)}</span>`:''}</div>
-   ${ok?`<div class="kv-list"><span>Target OKR FY (Q4) revenue</span><span class="v">${rc(ok.q4.rev)} · proyeksi ${pc(A.rev/NM*12/ok.q4.rev)}</span><span>Target OKR FY (Q4) GP</span><span class="v">${rc(ok.q4.gp)} · proyeksi ${pc(A.gp/NM*12/ok.q4.gp)}</span></div>`:''}
+   <div class="kv-list"><span>Revenue FY proyeksi</span><span class="v">${rc(A.rev/NMD*12)}</span><span>Direct cost FY proyeksi</span><span class="v">${rc(A.dir/NMD*12)}</span><span>Gross profit FY proyeksi</span><span class="v">${rc(A.gp/NMD*12)}</span>${hasB?`<span>Proyeksi vs anggaran revenue</span><span class="v">${pc(A.rev/NMD*12/b.rev)}</span>`:''}</div>
+   ${ok?`<div class="kv-list"><span>Target OKR FY (Q4) revenue</span><span class="v">${rc(ok.q4.rev)} · proyeksi ${pc(A.rev/NMD*12/ok.q4.rev)}</span><span>Target OKR FY (Q4) GP</span><span class="v">${rc(ok.q4.gp)} · proyeksi ${pc(A.gp/NMD*12/ok.q4.gp)}</span></div>`:''}
    <a class="btn sm" href="#simulasi">Simulasikan perubahan revenue, biaya SDM & volume</a></section></div>`},
  after(F){const A=agg(F);const P=palette();const b=LS.get('budget',{});
   bSave.addEventListener('click',()=>{LS.set('budget',{rev:+bRev.value||0,dir:+bDir.value||0,gp:+bGp.value||0});toast('Anggaran disimpan di browser ini.');render()});
   bClr.addEventListener('click',()=>{LS.set('budget',null);render()});
-  const ds=[{label:'Actual YTD',data:[A.rev,A.dir,A.gp],backgroundColor:P[0],borderRadius:3},{label:'Proyeksi sisa tahun',data:[A.rev/NM*(12-NM),A.dir/NM*(12-NM),A.gp/NM*(12-NM)],backgroundColor:P[1]+'99',borderRadius:3}];
+  const ds=[{label:'Actual YTD',data:[A.rev,A.dir,A.gp],backgroundColor:P[0],borderRadius:3},{label:'Proyeksi sisa tahun',data:[A.rev/NMD*(12-NMD),A.dir/NMD*(12-NMD),A.gp/NMD*(12-NMD)],backgroundColor:P[1]+'99',borderRadius:3}];
   const ok=okrScope();if(ok)ds.push({type:'line',label:'Target OKR FY (Q4)',data:[ok.q4.rev,ok.q4.dir,ok.q4.gp],borderColor:css('--gold'),backgroundColor:css('--gold'),pointRadius:7,pointStyle:'line',showLine:false,borderWidth:3});
-  {const T=D.targets||{};regExport('okr','target-okr-vs-aktual',[['Segmen','Target Rev Q3','Aktual Rev','Target GP Q3','Aktual GP','Target GPM Q3','GPM aktual','Target Rev FY','Target GP FY'],...SEGS.filter(s=>T[s]).map(s=>{const a=agg(DATA.clients.filter(c=>c.seg===s).map(c=>cv(c)));return[s,T[s].q3.rev,Math.round(a.rev),T[s].q3.gp,Math.round(a.gp),T[s].q3.gpm,a.gpm,T[s].q4.rev,T[s].q4.gp]})])}
+  {const T=D.targets||{};regExport('okr','target-okr-vs-aktual',[['Segmen','Periode','Target Rev periode','Aktual Rev','Target GP periode','Aktual GP','Target GPM','GPM aktual','Target Rev FY','Target GP FY'],...SEGS.filter(s=>T[s]).map(s=>{const a=agg(DATA.clients.filter(c=>c.seg===s).map(c=>cv(c)));const t=okrT(T[s]);return[s,periodLabel(),Math.round(t.q3.rev),Math.round(a.rev),Math.round(t.q3.gp),Math.round(a.gp),t.q3.gpm,a.gpm,t.q4.rev,t.q4.gp]})])}
   if(+b.rev>0)ds.push({type:'line',label:'Anggaran FY',data:[+b.rev,+b.dir||null,+b.gp||null],borderColor:css('--neg'),backgroundColor:css('--neg'),pointRadius:6,pointStyle:'line',showLine:false,borderWidth:3});
   mk('cFc',{type:'bar',data:{labels:['Revenue','Direct Cost','Gross Profit'],datasets:ds},options:baseOpts({plugins:{legend:{position:'bottom',labels:{color:css('--muted'),usePointStyle:true,boxWidth:8}},tooltip:{callbacks:{label:tipRp}}},scales:{x:{stacked:true,ticks:{color:css('--ink')},grid:{display:false}},y:{stacked:true,ticks:{color:css('--muted'),callback:v=>rc(v).replace('Rp ','')},grid:{color:css('--line')}}}})});
  }};
@@ -827,9 +839,9 @@ VIEWS['contact-center']={html(F){const A=agg(F);const o=LS.get('ops',{fte:'',hrs
    <div class="filters"><div class="fld"><label for="oFte">Total agent / FTE</label><input id="oFte" type="number" value="${o.fte}" style="width:130px"></div>
    <div class="fld"><label for="oHrs">Productive hours / bln</label><input id="oHrs" type="number" value="${o.hrs}" style="width:150px"></div>
    <div class="fld"><label for="oVol">Interaksi ditangani / bln</label><input id="oVol" type="number" value="${o.vol}" style="width:160px"></div><button class="btn pri" id="oSave" type="button">Hitung</button></div>
-   <div class="kv-list"><span>Revenue per agent / bln</span><span class="v">${m(A.rev/NM,fte)}</span><span>Cost per agent / bln</span><span class="v">${m(A.dir/NM,fte)}</span><span>Labor cost per agent / bln</span><span class="v">${m(A.cats.jasnaker/NM,fte)}</span>
-   <span>Revenue per productive hour</span><span class="v">${m(A.rev/NM,hrs)}</span><span>Cost per productive hour</span><span class="v">${m(A.dir/NM,hrs)}</span>
-   <span>Cost per interaction</span><span class="v">${m(A.dir/NM,vol)}</span><span>Technology (jaringan) cost per interaction</span><span class="v">${m(A.cats.jarkom/NM,vol)}</span><span>Profit per interaction</span><span class="v">${m(A.gp/NM,vol)}</span></div></section>
+   <div class="kv-list"><span>Revenue per agent / bln</span><span class="v">${m(A.rev/NMD,fte)}</span><span>Cost per agent / bln</span><span class="v">${m(A.dir/NMD,fte)}</span><span>Labor cost per agent / bln</span><span class="v">${m(A.cats.jasnaker/NMD,fte)}</span>
+   <span>Revenue per productive hour</span><span class="v">${m(A.rev/NMD,hrs)}</span><span>Cost per productive hour</span><span class="v">${m(A.dir/NMD,hrs)}</span>
+   <span>Cost per interaction</span><span class="v">${m(A.dir/NMD,vol)}</span><span>Technology (jaringan) cost per interaction</span><span class="v">${m(A.cats.jarkom/NMD,vol)}</span><span>Profit per interaction</span><span class="v">${m(A.gp/NMD,vol)}</span></div></section>
   <section class="panel"><h3>Apakah volume menaikkan profit?</h3><p>Analisis ini butuh volume interaksi bulanan per kontrak. Setelah sheet <b>Operational Metrics</b> diunggah, bandingkan pertumbuhan volume dengan pertumbuhan biaya tenaga kerja per bulan: bila biaya tumbuh lebih cepat dari volume, efisiensi menurun.</p>
    <div class="callout">Dari data keuangan saja: biaya tenaga kerja = ${pc(A.rev?A.cats.jasnaker/A.rev:null)} dari revenue dan ${pc(A.dir?A.cats.jasnaker/A.dir:null)} dari direct cost. Overtime cost dan shrinkage cost tidak dipisahkan di file.</div></section></div>`},
  after(F){const P=palette();oSave.addEventListener('click',()=>{LS.set('ops',{fte:oFte.value,hrs:oHrs.value,vol:oVol.value});render()});
@@ -850,7 +862,7 @@ VIEWS.simulasi={html(F){const s=LS.get('sim',null)||SIMDEF();const ex=new Set(s.
    <div class="filters">${num('fteD','Tambah/kurang FTE',110)}${num('fteCost','Biaya per FTE / bln (asumsi)',170)}${num('aiInv','Investasi AI & otomasi (Rp)',170)}${num('aiSave','Efisiensi labor dari AI (%)',150)}${num('opex','OPEX / overhead YTD (Rp)',170)}${num('tax','Pajak (%)',80)}</div>
    <details><summary style="cursor:pointer;font-weight:500">Tambah atau kurangi proyek (${ex.size} dikecualikan)</summary><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:4px 12px;margin-top:8px;font-size:12.5px">
    ${DATA.clients.map((c,i)=>`<label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="exc${i}" data-ex="${esc(c.n)}" ${ex.has(c.n)?'':'checked'}>${esc(c.n)}</label>`).join('')}</div></details>
-   <p class="hint">Basis simulasi = data terfilter (${st.src.toUpperCase()}, YTD ${MONTHS[NM-1]}). AHT memengaruhi biaya tenaga kerja secara proporsional (asumsi kebutuhan agen sebanding AHT). Investasi AI diamortisasi 36 bulan; ${NM} bulan dibebankan ke periode ini. Biaya per FTE adalah asumsi; sesuaikan dengan data HR.</p>
+   <p class="hint">Basis simulasi = data terfilter (${st.src.toUpperCase()}, YTD ${MONTHS[NM-1]}). AHT memengaruhi biaya tenaga kerja secara proporsional (asumsi kebutuhan agen sebanding AHT). Investasi AI diamortisasi 36 bulan; ${NMD} bulan dibebankan ke periode ini. Biaya per FTE adalah asumsi; sesuaikan dengan data HR.</p>
    <button class="btn" id="simReset" type="button">Reset ke base case</button></section>
   <section class="panel"><h3>Dampak terhadap laba</h3><div class="tw"><table id="simT"></table></div><div class="cv h300"><canvas id="cSim"></canvas></div><div id="simBe"></div></section></div>`},
  after(F){const P=palette();
@@ -858,11 +870,11 @@ VIEWS.simulasi={html(F){const s=LS.get('sim',null)||SIMDEF();const ex=new Set(s.
     s.ex=[...document.querySelectorAll('[data-ex]')].filter(x=>!x.checked).map(x=>x.dataset.ex);return s};
   const calc=(s,Fx)=>{const G=Fx.filter(x=>!(s.ex||[]).includes(x.n));const A=agg(G);
     const rev=A.rev*(1+s.vol/100)*(1+s.tariff/100);
-    const lab=A.cats.jasnaker*(1+s.vol/100)*(1+s.labor/100)*(1+s.aht/100)*(1-s.aiSave/100)+s.fteD*s.fteCost*NM;
+    const lab=A.cats.jasnaker*(1+s.vol/100)*(1+s.labor/100)*(1+s.aht/100)*(1-s.aiSave/100)+s.fteD*s.fteCost*NMD;
     const net=A.cats.jarkom*(1+s.vol/100)*(1+s.net/100);
     const ged=A.cats.gedung;const oth=(A.cats.kpk+A.cats.lain+A.cats.other)*(1+s.vol/100)*(1+s.oth/100);
-    const ai=s.aiInv/36*NM;const dir=lab+net+ged+oth+ai;const gp=rev-dir;const ebitda=gp-s.opex;const ebit=ebitda-A.dep;const np=ebit>0?ebit*(1-s.tax/100):ebit;
-    const fixed=ged+ai+s.opex+A.dep+s.fteD*s.fteCost*NM;const varr=rev>0?(lab+net+oth-s.fteD*s.fteCost*NM)/rev:0;const be=varr<1?fixed/(1-varr):null;
+    const ai=s.aiInv/36*NMD;const dir=lab+net+ged+oth+ai;const gp=rev-dir;const ebitda=gp-s.opex;const ebit=ebitda-A.dep;const np=ebit>0?ebit*(1-s.tax/100):ebit;
+    const fixed=ged+ai+s.opex+A.dep+s.fteD*s.fteCost*NMD;const varr=rev>0?(lab+net+oth-s.fteD*s.fteCost*NMD)/rev:0;const be=varr<1?fixed/(1-varr):null;
     return{rev,dir:dir,total:dir+s.opex+A.dep,gp,ebitda,np,gpm:rev?gp/rev:null,npm:rev?np/rev:null,be}};
   const upd=()=>{const s=read();LS.set('sim',s);document.querySelectorAll('input[type=range]').forEach(r=>{document.getElementById(r.id+'V').textContent=(+r.value>0?'+':'')+r.value+r.dataset.unit});
     const b=calc({...SIMDEF(),opex:s.opex,tax:s.tax,fteCost:s.fteCost},F),x=calc(s,F);
@@ -895,16 +907,16 @@ VIEWS.data={html(F){const C=D.clients,t=D.tot||{};const hist=LS.get('uploads',[]
   const zeroRev=C.filter(c=>c.mr.some((v,i)=>v<=0&&c.md[i]>0)).map(c=>[c.n,MONTHS.filter((m,i)=>c.mr[i]<=0&&c.md[i]>0)]);
   const negM=C.filter(c=>c.mr.some(v=>v<0));
   return `<div class="grid g2">
-  <section class="panel"><h3>Upload data (Excel / CSV)</h3><p class="hint">Gunakan template 6 sheet: Revenue, Cost, Budget, Operational Metrics, Allocation Rules, Master Data. Minimal sheet Revenue dan Cost wajib diisi. Data diproses di browser dan tidak dikirim ke server mana pun.</p>
-   <div class="drop" id="drop"><p style="margin:0 0 8px">Tarik file ke sini atau</p><input type="file" id="up" accept=".xlsx,.xls,.csv"></div>
-   <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="tpl" type="button">Unduh template Excel</button>${DATA.origin!=='file'?'<button class="btn" id="restore" type="button">Kembali ke data file asli</button>':''}</div>
+  <section class="panel"><h3>Upload data (Excel)</h3><p class="hint">Format sama dengan file <i>Share Profitability</i>: sheet <b>GPM</b> (wajib: baris YTD + rincian bulanan Month 1–12), <b>PVT</b> (opsional: ledger & depresiasi), <b>OKR</b> (opsional: target). File asli lengkap (dengan sheet Detail) juga bisa langsung diunggah. Setelah pratinjau, Director/Finance dapat memperbarui seluruh nilai dashboard untuk semua pengguna.</p>
+   <div class="drop" id="drop"><p style="margin:0 0 8px">Tarik file ke sini atau</p><input type="file" id="up" accept=".xlsx,.xlsm,.xls"></div>
+   <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="tpl" type="button">Unduh template Excel (berisi data aktif)</button>${DATA.origin!=='file'?'<button class="btn" id="restore" type="button">Kembali ke dataset resmi</button>':''}</div>
    <div id="upRes"></div></section>
-  <section class="panel"><h3>Riwayat upload & dataset aktif</h3><div class="log">Dataset resmi (Firestore): ${esc(D.file)}<br>Sheet dipakai: GPM (YTD & rincian bulanan per IO, SAP vs OPS), PVT (ledger SAP per IO, termasuk 4.DEPRESIASI), OKR (target Q3 & Q4 per segmen).<br>Sheet tidak dipakai: Detail (364 ribu baris transaksi — sudah terangkum di PVT), Pvot Rev +, Sheet1.<br>${C.length} layanan · ${sum(C,c=>c.svc.length)} IO · ${SEGS.length} segmen · ${MONTHS[0]}–${MONTHS[NM-1]} ${YEAR}<br><br>${hist.length?hist.map(h=>`${esc(h.t)} · ${esc(h.f)} · ${esc(h.r)}`).join('<br>'):'Belum ada upload di browser ini.'}</div></section></div>
+  <section class="panel"><h3>Riwayat upload & dataset aktif</h3><div class="log">Dataset resmi (Firestore): ${esc(D.file)}<br>Sheet dipakai: GPM (YTD & rincian bulanan per IO, SAP vs OPS), PVT (ledger SAP per IO, termasuk 4.DEPRESIASI), OKR (target Q3 & Q4 per segmen).<br>Sheet tidak dipakai: Detail (transaksi — sudah terangkum di PVT), Pvot Rev +, Sheet1.<br>${C.length} layanan · ${sum(C,c=>c.svc.length)} IO · ${SEGS.length} segmen · data tersedia ${MONTHS_ALL[0]}–${MONTHS_ALL[DM-1]} ${YEAR}${D.uploadedAt?' · diunggah '+new Date(D.uploadedAt).toLocaleString('id-ID'):''}<br><br>${hist.length?hist.map(h=>`${esc(h.t)} · ${esc(h.f)} · ${esc(h.r)}`).join('<br>'):'Belum ada upload di browser ini.'}</div></section></div>
   <section class="panel"><h3>Rekonsiliasi sumber data</h3><p class="hint">Dashboard memakai baris YTD per layanan di sheet <b>GPM</b> sebagai angka resmi, rincian bulanan GPM untuk tren, dan <b>PVT</b> (pivot ledger SAP) untuk D&A dan pembanding posting.</p>
    <div class="tw"><table><thead><tr><th>Pemeriksaan</th><th class="n">SAP</th><th class="n">OPS</th><th>Hasil</th></tr></thead><tbody>
    ${segChk.map(r=>`<tr><td>Revenue ${r[0]}: Σ layanan vs baris ringkasan GPM</td><td class="n">${rp(r[1])}</td><td class="n mut">${rp(r[2])}</td><td><span class="pill ${ok(r[1],r[2])&&ok(r[3],r[4])?'st-hi':'st-ls'}">${ok(r[1],r[2])&&ok(r[3],r[4])?'Cocok (revenue & direct cost)':'Selisih '+rc(r[1]-r[2])}</span></td></tr>`).join('')}
    <tr><td>Total G&E: Σ layanan vs baris total GPM</td><td class="n">${rp(sumS)}</td><td class="n">${rp(sumO)}</td><td><span class="pill ${ok(sumS,t.Total&&t.Total.rs)&&ok(sumO,t.Total&&t.Total.ro)?'st-hi':'st-ls'}">${ok(sumS,t.Total&&t.Total.rs)&&ok(sumO,t.Total&&t.Total.ro)?'Cocok':'Selisih'}</span></td></tr>
-   <tr><td>Rincian bulanan (${MONTHS[0]}–${MONTHS[NM-1]}) vs YTD per layanan</td><td class="n">${rp(sum(C,c=>sum(c.mr)))}</td><td class="n">${rp(sum(C,c=>sum(c.mro)))}</td><td><span class="pill ${monBad.length?'st-ls':'st-hi'}">${monBad.length?monBad.length+' layanan tidak cocok':'Cocok untuk semua '+C.length+' layanan (toleransi pembulatan Rp 20)'}</span></td></tr>
+   <tr><td>Rincian bulanan (${MONTHS_ALL[0]}–${MONTHS_ALL[DM-1]}) vs baris YTD per layanan</td><td class="n">${rp(sum(C,c=>sum(c.mr)))}</td><td class="n">${rp(sum(C,c=>sum(c.mro)))}</td><td><span class="pill ${monBad.length?'st-ls':'st-hi'}">${monBad.length?monBad.length+' layanan tidak cocok':'Cocok untuk semua '+C.length+' layanan (toleransi pembulatan Rp 20)'}</span></td></tr>
    <tr><td>Direct cost: Σ 6 kategori biaya vs Direct Cost</td><td class="n">${rp(dS)}</td><td class="n">${rp(dO)}</td><td><span class="pill ${catBad.length?'st-bt':'st-hi'}">${catBad.length?catBad.length+' layanan berselisih':'Cocok'}</span></td></tr>
    <tr><td>Revenue: rekap GPM vs ledger SAP (PVT, IO yang sama)</td><td class="n">${rp(sumS)}</td><td class="n">${rp(pvR)}</td><td><span class="pill st-bt">Ledger ${pvR-sumS>=0?'+':''}${rc(pvR-sumS)} vs rekap (${pvList.filter(x=>Math.abs(x.dr)>1).length} layanan)</span></td></tr>
    <tr><td>Direct cost: rekap GPM vs ledger SAP (PVT)</td><td class="n">${rp(dS)}</td><td class="n">${rp(pvD)}</td><td><span class="pill ${Math.abs(pvD-dS)>2?'st-bt':'st-hi'}">${Math.abs(pvD-dS)>2?'Ledger '+(pvD-dS>=0?'+':'')+rc(pvD-dS)+' ('+pvList.filter(x=>Math.abs(x.dd)>1).length+' layanan)':'Cocok'}</span></td></tr>
@@ -923,46 +935,154 @@ VIEWS.data={html(F){const C=D.clients,t=D.tot||{};const hist=LS.get('uploads',[]
    ${C.filter(c=>c.rs<=0&&c.ds>0).map(c=>`<tr><td>Revenue nol dengan biaya</td><td class="wrap">${esc(c.n)}: revenue SAP ${rc(c.rs)}, direct cost ${rc(c.ds)}.</td></tr>`).join('')}
    ${C.filter(c=>c.rs-c.ds<0).map(c=>`<tr><td>Gross profit SAP negatif</td><td class="wrap">${esc(c.n)} (${esc(c.seg)}): GP ${rc(c.rs-c.ds)}, sedangkan OPS ${rc(c.ro-c.do)}.</td></tr>`).join('')}
    </tbody></table></div></section>`},
- after(){bindRows();regExport('pvdiff','selisih-rekap-vs-ledger',[['Layanan','Segmen','Revenue rekap','Revenue ledger','Selisih revenue','Direct cost rekap','Direct cost ledger','Selisih direct cost'],...D.clients.map(c=>[c.n,c.seg,c.rs,c.pvRev,(c.pvRev||0)-c.rs,c.ds,c.pvDir,(c.pvDir||0)-c.ds])]);tpl.addEventListener('click',()=>{try{XLSX.writeFile(templateWb(),'Template_Upload_Profitability.xlsx');toast('Template dibuat. Bila unduhan tidak muncul, gunakan file template yang dikirim bersama dashboard.')}catch(e){toast('Unduhan diblokir di tampilan ini. Gunakan file template yang dikirim bersama dashboard.')}});
-  const restore=document.getElementById('restore');if(restore)restore.addEventListener('click',()=>{DATA={clients:D.clients.map(c=>({...c})),origin:'file'};st.cust='all';st.sl='all';applyMonths();buildFilters();render()});
+ after(){bindRows();regExport('pvdiff','selisih-rekap-vs-ledger',[['Layanan','Segmen','Revenue rekap','Revenue ledger','Selisih revenue','Direct cost rekap','Direct cost ledger','Selisih direct cost'],...D.clients.map(c=>[c.n,c.seg,c.rs,c.pvRev,(c.pvRev||0)-c.rs,c.ds,c.pvDir,(c.pvDir||0)-c.ds])]);tpl.addEventListener('click',()=>{try{XLSX.writeFile(templateWb(),'Template_Upload_Profitability_GE.xlsx');toast('Template dibuat. Bila unduhan tidak muncul, gunakan file template yang dikirim bersama dashboard.')}catch(e){toast('Unduhan diblokir di tampilan ini. Gunakan file template yang dikirim bersama dashboard.')}});
+  const restore=document.getElementById('restore');if(restore)restore.addEventListener('click',()=>{if(OFFICIAL_D){D=OFFICIAL_D;OFFICIAL_D=null}DATA={clients:D.clients.map(c=>({...c})),origin:'file'};st.pe=null;st.seg='all';st.cust='all';st.sl='all';applyMonths();buildFilters();render()});
   const drop=document.getElementById('drop');['dragover','dragenter'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('over')}));['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('over')}));
   drop.addEventListener('drop',e=>{const f=e.dataTransfer.files[0];if(f)handleFile(f)});up.addEventListener('change',e=>{const f=e.target.files[0];if(f)handleFile(f)});
  }};
-function templateWb(){const wb=XLSX.utils.book_new();const S={
-  'Revenue':['Date','Business Unit','Project','Customer','Service Line','Revenue Type','Quantity','Unit Price','Revenue'],
-  'Cost':['Date','Business Unit','Project','Customer','Cost Center','Cost Category','Cost Type','Quantity','Unit Cost','Total Cost'],
-  'Budget':['Period','Business Unit','Project','Revenue Budget','Direct Cost Budget','OPEX Budget','Profit Target','Margin Target'],
-  'Operational Metrics':['Date','Project','Channel','Agent FTE','Productive Hours','Interaction Volume','AHT','Occupancy','SLA','Quality Score'],
-  'Allocation Rules':['Cost Center','Allocation Basis','Allocation Rate','Effective Period'],
-  'Master Data':['Business Unit','Project','Customer','Service Line','Channel','Cost Category','Account Code']};
-  for(const k in S)XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet([S[k]]),k);return wb}
-const CATMAP=s=>{s=String(s||'').toLowerCase();if(/jasnaker|labor|tenaga/.test(s))return'jasnaker';if(/jarkom|telek|network|jaringan/.test(s))return'jarkom';if(/gedung|facility|fasilitas|infra/.test(s))return'gedung';if(/vendor|pihak ketiga|outsourc/.test(s))return'kpk';if(/deprec|depresiasi|amort/.test(s))return'dep';if(/market/.test(s))return'other';return'lain'};
-function handleFile(f){const rd=new FileReader();upRes.innerHTML='<p class="hint">Memproses '+esc(f.name)+'…</p>';
-  rd.onload=e=>{const log=[],err=[];try{const wb=XLSX.read(e.target.result,{type:'array',cellDates:true});
-    const sh=n=>{const k=wb.SheetNames.find(x=>x.toLowerCase()===n.toLowerCase());return k?XLSX.utils.sheet_to_json(wb.Sheets[k],{defval:null}):null};
-    const rev=sh('Revenue'),cost=sh('Cost');
-    if(!rev||!cost){err.push('Sheet "Revenue" dan "Cost" wajib ada. Sheet yang ditemukan: '+wb.SheetNames.join(', '))}
-    const need={Revenue:['Date','Customer','Revenue'],Cost:['Date','Customer','Cost Category','Total Cost']};
-    if(!err.length){[['Revenue',rev],['Cost',cost]].forEach(([n,rows])=>{if(!rows.length){err.push(`Sheet ${n} kosong.`);return}const miss=need[n].filter(c=>!(c in rows[0]));if(miss.length)err.push(`Sheet ${n}: kolom wajib tidak ada: ${miss.join(', ')}`)})}
-    if(!err.length){const seen=new Set();let dup=0,blank=0,bad=0,negv=0;const periods=new Set();
-      const chk=(rows,valK,n)=>rows.forEach((r,i)=>{const key=JSON.stringify(r);if(seen.has(n+key))dup++;seen.add(n+key);if(!r.Customer||r[valK]==null||r[valK]==='')blank++;const v=+r[valK];if(isNaN(v))bad++;else if(v<0)negv++;
-        const d=r.Date instanceof Date?r.Date:new Date(r.Date);if(!isNaN(d))periods.add(d.getFullYear())});
-      chk(rev,'Revenue','R');chk(cost,'Total Cost','C');
-      log.push(`Revenue: ${rev.length} baris · Cost: ${cost.length} baris`);if(dup)log.push(`Duplikat terdeteksi: ${dup} baris (diabaikan)`);if(blank)log.push(`Nilai kosong (Customer/nilai): ${blank} baris (diabaikan)`);if(bad)err.push(`${bad} nilai bukan angka.`);if(negv)log.push(`${negv} nilai negatif (koreksi/reversal), tetap dihitung`);
-      if(periods.size>1)err.push(`Data berisi beberapa tahun (${[...periods].join(', ')}). Pisahkan per periode sebelum diunggah.`);
-      if(!err.length){const C={};const add=n=>C[n]=C[n]||{n,seg:'Upload',rs:0,ds:0,cat:{},dep:[0,0],mr:Array(NM).fill(0),md:Array(NM).fill(0),mc:{},svc:new Set(),sl:'Lainnya'};const seen2=new Set();
-        rev.forEach(r=>{const k=JSON.stringify(r);if(seen2.has('R'+k)||!r.Customer||r.Revenue==null)return;seen2.add('R'+k);const c=add(String(r.Customer).trim());c.rs+=+r.Revenue;if(r['Service Line'])c.sl=String(r['Service Line']);if(r['Business Unit'])c.seg=String(r['Business Unit']);if(r.Project)c.svc.add(String(r.Project));const d=r.Date instanceof Date?r.Date:new Date(r.Date);if(!isNaN(d)&&d.getMonth()<NM)c.mr[d.getMonth()]+=+r.Revenue});
-        cost.forEach(r=>{const k=JSON.stringify(r);if(seen2.has('C'+k)||!r.Customer||r['Total Cost']==null)return;seen2.add('C'+k);const c=add(String(r.Customer).trim());const cat=CATMAP(r['Cost Category']);const v=+r['Total Cost'];
-          if(cat==='dep'){c.dep[0]+=v;c.dep[1]+=v;return}c.ds+=v;c.cat[cat]=c.cat[cat]||[0,0];c.cat[cat][0]+=v;c.cat[cat][1]+=v;const d=r.Date instanceof Date?r.Date:new Date(r.Date);if(!isNaN(d)&&d.getMonth()<NM){c.md[d.getMonth()]+=v;c.mc[cat]=c.mc[cat]||[Array(NM).fill(0),Array(NM).fill(0)];c.mc[cat][0][d.getMonth()]+=v;c.mc[cat][1][d.getMonth()]+=v}});
-        const list=Object.values(C).map(c=>({...c,ro:c.rs,do:c.ds,mro:c.mr,mdo:c.md,svc:[...c.svc]}));
-        const tr=sum(list,c=>c.rs),tc=sum(list,c=>c.ds);log.push(`Rekonsiliasi: total revenue ${rp(tr)} · total direct cost ${rp(tc)} · ${list.length} pelanggan`);
-        DATA={clients:list,origin:'upload'};st.seg='all';st.sl='all';st.cust='all';buildFilters();
-        const h=LS.get('uploads',[]);h.unshift({t:new Date().toLocaleString('id-ID'),f:f.name,r:`OK · ${list.length} pelanggan · revenue ${rc(tr)}`});LS.set('uploads',h.slice(0,20));
-        render();toast('Data upload diterapkan. Sumber SAP dan OPS memakai angka yang sama untuk data upload.');return}}
-  }catch(ex){err.push('File tidak dapat dibaca: '+ex.message)}
-  const h=LS.get('uploads',[]);h.unshift({t:new Date().toLocaleString('id-ID'),f:f.name,r:'GAGAL · '+err.join(' ')});LS.set('uploads',h.slice(0,20));
-  upRes.innerHTML=`<div class="callout neg"><b>Upload ditolak.</b><br>${err.map(esc).join('<br>')}</div>${log.length?'<div class="log">'+log.map(esc).join('<br>')+'</div>':''}`};
+/* ===================== Ingest Excel (format = file Share Profitability: sheet GPM, PVT, OKR) ===================== */
+const ING_CK=['jarkom','jasnaker','kpk','lain','gedung','other'];
+const ING_CATKEY=[['jarkom',/jarkom/],['jasnaker',/jasnaker/],['kpk',/kerja ?sama|pihak ketiga/],['lain',/lain/],['gedung',/gedung/],['other',/marketing/]];
+const ING_MON={jan:1,feb:2,mar:3,apr:4,mei:5,may:5,jun:6,jul:7,agu:8,agt:8,aug:8,sep:9,okt:10,oct:10,nov:11,des:12,dec:12};
+function ingNum(v){if(v==null||v==='')return 0;if(typeof v==='number')return isFinite(v)?v:0;const s=String(v).trim();if(!s||s[0]==='#')return 0;
+  let t=s.replace(/\s/g,'');if(/^-?[\d.]+,\d+$/.test(t))t=t.replace(/\./g,'').replace(',','.');else t=t.replace(/,/g,'');const n=parseFloat(t);return isFinite(n)?n:0}
+function ingMonth(v){if(v==null||v==='')return null;if(v instanceof Date&&!isNaN(v))return v.getMonth()+1;
+  if(typeof v==='number')return v>=1&&v<=12&&Math.floor(v)===v?v:null;const s=String(v).trim().toLowerCase();if(/ytd/.test(s))return null;
+  if(/^\d{1,2}$/.test(s)){const n=+s;return n>=1&&n<=12?n:null}const m=s.match(/^([a-z]{3})/);return m&&ING_MON[m[1]]?ING_MON[m[1]]:null}
+const ingNorm=s=>String(s??'').toLowerCase().replace(/\s+/g,' ').trim();
+function ingClassify(c,ionames){const names=[c.ion,...ionames,c.n].join(' ').toLowerCase();const lab=c.cat.jasnaker[0],d=c.ds||1;
+  if(/spgdt|\b119\b|\b112\b|ncc|p3kd|kejiwaan|\b115\b/.test(names))return'SPGDT & Layanan Darurat';
+  if(/waba|otp|whatsapp|omnix|messaging|crm/.test(names)&&(lab/d<.3||names.includes('waba')))return'Omnichannel & Messaging';
+  if(/1500|150-|nomor akses|no akses|sip trunk|\b1[0-9]{2}\b/.test(names)&&lab/d<.2)return'Nomor Akses (1500xxx)';
+  if(/aplikasi|apps|superapps|dispatcher|tv serv|jastel|pembangunan/.test(names)&&!/\bcc\b/.test(names))return'Aplikasi & Solusi IT';
+  return'Contact Center Managed Service'}
+function ingSheet(wb,name){const k=wb.SheetNames.find(x=>x.trim().toLowerCase()===name.toLowerCase());return k&&wb.Sheets[k]?XLSX.utils.sheet_to_json(wb.Sheets[k],{header:1,defval:null,raw:true}):null}
+/* returns {ds, log:[], warn:[], err:[]} */
+function ingestWorkbook(wb,fileName,prev){
+  const log=[],warn=[],err=[];const G=ingSheet(wb,'GPM');
+  if(!G){err.push('Sheet "GPM" tidak ditemukan. Sheet yang ada: '+wb.SheetNames.join(', ')+'. Gunakan format template (sheet GPM, PVT, OKR).');return{log,warn,err}}
+  // header row: col "Departement" & "Layanan"
+  const hIdx=G.findIndex(r=>r&&r.some(v=>/^departe?ment/.test(ingNorm(v)))&&r.some(v=>ingNorm(v)==='layanan'));
+  if(hIdx<0){err.push('Sheet GPM: baris judul kolom (Departement, Layanan, IO Number, IO Name, Month, …) tidak ditemukan.');return{log,warn,err}}
+  const H=G[hIdx].map(ingNorm);const col=re=>H.findIndex(h=>re.test(h));
+  const cDep=col(/^departe?ment/),cLay=col(/^layanan$/),cIo=col(/^io number|^io no/),cIon=col(/^io name|^nama io/),cMon=col(/^month|^bulan/);
+  const cRs=col(/^revenue sap/),cRo=col(/^revenue ops/),cDs=col(/^direct cost sap/),cDo=col(/^direct cost ops/);
+  const cCat={};for(const[k,re]of ING_CATKEY){cCat[k]=[H.findIndex(h=>/^beban/.test(h)&&re.test(h)&&/ sap$/.test(h)),H.findIndex(h=>/^beban/.test(h)&&re.test(h)&&/ ops$/.test(h))]}
+  const miss=[['Departement',cDep],['Layanan',cLay],['IO Number',cIo],['Month',cMon],['Revenue SAP',cRs],['Revenue OPS',cRo],['Direct Cost SAP',cDs],['Direct Cost OPS',cDo]].filter(x=>x[1]<0).map(x=>x[0]);
+  ING_CK.forEach(k=>{if(cCat[k][0]<0||cCat[k][1]<0)miss.push('Beban '+k+' SAP/OPS')});
+  if(miss.length){err.push('Sheet GPM: kolom wajib tidak ditemukan: '+miss.join(', '));return{log,warn,err}}
+  // segment summary rows above header
+  const tot={};for(let i=0;i<hIdx;i++){const r=G[i]||[];const nm=r[cMon];const rs=ingNum(r[cRs]);if(typeof r[cRs]!=='number')continue;
+    if(nm&&String(nm).trim()&&!/^dept/i.test(String(nm)))tot[String(nm).trim()]={rs:ingNum(r[cRs]),ro:ingNum(r[cRo]),ds:ingNum(r[cDs]),do:ingNum(r[cDo])};
+    else if(!nm&&rs&&!tot.Total)tot.Total={rs,ro:ingNum(r[cRo]),ds:ingNum(r[cDs]),do:ingNum(r[cDo])}}
+  const C={};let nY=0,nM=0,skipped=0,maxM=0;
+  const get=(seg,lay)=>{const k=seg+'||'+lay;return C[k]=C[k]||{n:lay,seg,io:'',ion:'',ytd:null,ios:{},mr:Array(12).fill(0),md:Array(12).fill(0),mro:Array(12).fill(0),mdo:Array(12).fill(0),mc:Object.fromEntries(ING_CK.map(k=>[k,[Array(12).fill(0),Array(12).fill(0)]]))}};
+  for(let i=hIdx+1;i<G.length;i++){const r=G[i];if(!r)continue;const seg=String(r[cDep]??'').trim(),lay=String(r[cLay]??'').trim();
+    if(!seg||!lay||/^departe?ment/i.test(seg))continue;const io=String(r[cIo]??'').trim(),ion=String(cIon>=0?r[cIon]??'':'').trim();
+    const c=get(seg,lay);const m=ingMonth(r[cMon]);
+    const v={rs:ingNum(r[cRs]),ro:ingNum(r[cRo]),ds:ingNum(r[cDs]),do:ingNum(r[cDo]),cat:Object.fromEntries(ING_CK.map(k=>[k,[ingNum(r[cCat[k][0]]),ingNum(r[cCat[k][1]])]]))};
+    if(m==null){if(/ytd/i.test(String(r[cMon]??''))||r[cMon]==null){if(c.ytd){warn.push(`Baris YTD ganda untuk ${lay} (${seg}); dijumlahkan.`);['rs','ro','ds','do'].forEach(k=>c.ytd[k]+=v[k]);ING_CK.forEach(k=>{c.ytd.cat[k][0]+=v.cat[k][0];c.ytd.cat[k][1]+=v.cat[k][1]})}else c.ytd=v;
+        if(!c.io){c.io=io;c.ion=ion}nY++}else{skipped++}continue}
+    const j=m-1;c.mr[j]+=v.rs;c.mro[j]+=v.ro;c.md[j]+=v.ds;c.mdo[j]+=v.do;ING_CK.forEach(k=>{c.mc[k][0][j]+=v.cat[k][0];c.mc[k][1][j]+=v.cat[k][1]});
+    if(io)c.ios[io]=ion||c.ios[io]||'';if(v.rs||v.ro||v.ds||v.do)maxM=Math.max(maxM,m);nM++}
+  if(skipped)warn.push(`${skipped} baris GPM dilewati karena kolom Month tidak dikenali (isi 1–12, nama bulan, atau "YTD …").`);
+  // PVT ledger (opsional)
+  const P=ingSheet(wb,'PVT');const pv={};
+  if(P){const ph=P.findIndex(r=>r&&r.some(v=>ingNorm(v)==='1.pendapatan'));
+    if(ph>=0){const h=P[ph].map(ingNorm);const ci=Math.max(0,h.findIndex(x=>/^io dan cc|^io number|^internal order/.test(x)));const cr=h.indexOf('1.pendapatan'),cd=h.indexOf('2.direct'),cdp=h.findIndex(x=>/^4\.depresiasi/.test(x));
+      for(let i=ph+1;i<P.length;i++){const r=P[i];if(!r||!r[ci])continue;const k=String(r[ci]).trim();if(/total/i.test(k))continue;pv[k]={rev:-ingNum(r[cr]),dir:ingNum(r[cd]),dep:cdp>=0?ingNum(r[cdp]):0}}
+      log.push(`PVT: ${Object.keys(pv).length} IO dibaca (revenue, direct cost, depresiasi).`)}else warn.push('Sheet PVT ada, tetapi kolom 1.PENDAPATAN tidak ditemukan; D&A dan pembanding ledger dikosongkan.')}
+  else warn.push('Sheet PVT tidak ada: D&A dan pembanding ledger SAP dikosongkan.');
+  // OKR (opsional)
+  const O=ingSheet(wb,'OKR');let targets=null;
+  if(O){const seen={};O.forEach(r=>{if(!r)return;const s=String(r[1]??'').trim();if(!s||typeof r[2]!=='number')return;if(/^target$|^$/i.test(s))return;
+      const t={rev:ingNum(r[2]),dir:ingNum(r[3]),gp:ingNum(r[4]),gpm:ingNum(r[5])};if(!t.gpm&&t.rev)t.gpm=t.gp/t.rev;(seen[s]=seen[s]||[]).push(t)});
+    const ks=Object.keys(seen).filter(s=>seen[s].length>=1);if(ks.length){targets={};ks.forEach(s=>{targets[s]={q3:seen[s][0],q4:seen[s][1]||seen[s][0]}});log.push(`OKR: target untuk ${ks.join(', ')}.`)}}
+  if(!targets){targets=prev&&prev.targets||{};warn.push('Sheet OKR tidak ada/tidak terbaca: target OKR memakai dataset sebelumnya.')}
+  // build clients
+  const out=[];let noMon=0;
+  for(const c of Object.values(C)){const any=c.mr.some(Boolean)||c.md.some(Boolean)||c.mro.some(Boolean)||c.mdo.some(Boolean);
+    if(!any&&c.ytd&&(c.ytd.rs||c.ytd.ds||c.ytd.ro||c.ytd.do)){noMon++;warn.push(`${c.n} (${c.seg}) hanya punya baris YTD tanpa rincian bulanan; tidak ikut dihitung.`);continue}
+    if(!any&&!c.ytd)continue;
+    const r=a=>a.map(v=>Math.round(v));const sumA=a=>a.reduce((s,x)=>s+x,0);
+    const y=c.ytd||{rs:sumA(c.mr),ro:sumA(c.mro),ds:sumA(c.md),do:sumA(c.mdo),cat:Object.fromEntries(ING_CK.map(k=>[k,[sumA(c.mc[k][0]),sumA(c.mc[k][1])]]))};
+    if(!c.io){const k=Object.keys(c.ios)[0]||'';c.io=k;c.ion=c.ios[k]||''}
+    const ios=Object.keys(c.ios);if(c.io&&!ios.includes(c.io)){ios.push(c.io);c.ios[c.io]=c.ion}
+    const o={n:c.n,seg:c.seg,io:c.io,ion:c.ion,ios,rs:Math.round(y.rs),ro:Math.round(y.ro),ds:Math.round(y.ds),do:Math.round(y.do),
+      cat:Object.fromEntries(ING_CK.map(k=>[k,[Math.round(y.cat[k][0]),Math.round(y.cat[k][1])]])),
+      mr:r(c.mr),md:r(c.md),mro:r(c.mro),mdo:r(c.mdo),mc:Object.fromEntries(ING_CK.map(k=>[k,[r(c.mc[k][0]),r(c.mc[k][1])]]))};
+    const dep=Math.round(ios.reduce((s,k)=>s+(pv[k]?pv[k].dep:0),0));o.dep=[dep,dep];
+    o.pvRev=P?Math.round(ios.reduce((s,k)=>s+(pv[k]?pv[k].rev:0),0)):null;o.pvDir=P?Math.round(ios.reduce((s,k)=>s+(pv[k]?pv[k].dir:0),0)):null;
+    o.sl=ingClassify(o,Object.values(c.ios));o.svc=ios.slice().sort().map(k=>`${c.ios[k]||'(tanpa nama)'} (${k})`);
+    o.blocked=Object.values(c.ios).filter(v=>/block|churn/i.test(v)).length;out.push(o)}
+  if(!out.length){err.push('Tidak ada baris data yang valid di sheet GPM.');return{log,warn,err}}
+  const segs=[...new Set(out.map(c=>c.seg))].sort();
+  log.push(`GPM: ${out.length} layanan · ${segs.length} segmen (${segs.join(', ')}) · ${nY} baris YTD · ${nM} baris bulanan · data s.d. bulan ke-${maxM}.`);
+  const yr=(String((G[hIdx+1]||[])[cMon]??'').match(/(\d{2,4})\s*$/)||[])[1];
+  const ds={clients:out,targets,tot,months:MONTHS_ALL.slice(),dataMonths:maxM||1,year:yr?(yr.length===2?2000+ +yr:+yr):(prev&&prev.year)||YEAR,file:fileName,uploadedAt:new Date().toISOString()};
+  return{ds,log,warn,err}}
+
+/* template Excel: struktur sama dengan file sumber, berisi data aktif */
+function templateWb(){const wb=XLSX.utils.book_new();const C=D.clients;const DMx=D.dataMonths||9;
+  const CH=['Beban Jarkom','Beban Jasnaker','Beban Kerjasama pihak ketiga','Beban Lain-lain','Beban Mandatory gedung','Beban Marketing'];
+  const VH=['GPM SAP','GPM OPS','GP SAP','GP OPS','Revenue SAP','Revenue OPS','Direct Cost SAP','Direct Cost OPS',...CH.flatMap(h=>[h+' SAP',h+' OPS'])];
+  const vals=(rs,ro,ds,dO,cat)=>[rs?(rs-ds)/rs:null,ro?(ro-dO)/ro:null,rs-ds,ro-dO,rs,ro,ds,dO,...ING_CK.flatMap(k=>[cat[k][0],cat[k][1]])];
+  const segs=[...new Set(C.map(c=>c.seg))].sort();const A=[[],[]];A.push(['','','','','Dept',...VH]);
+  const sumC=cs=>{const cat=Object.fromEntries(ING_CK.map(k=>[k,[sum(cs,c=>c.cat[k][0]),sum(cs,c=>c.cat[k][1])]]));return vals(sum(cs,c=>c.rs),sum(cs,c=>c.ro),sum(cs,c=>c.ds),sum(cs,c=>c.do),cat)};
+  segs.forEach(s=>A.push(['','','','',s,...sumC(C.filter(c=>c.seg===s))]));A.push(['','','','','',...sumC(C)]);A.push([],[]);
+  const HD=['Departement ','Layanan','IO Number','IO Name','Month',...VH];A.push(HD);
+  const ytdLbl='YTD '+MONTHS_ALL[DMx-1]+' '+String(D.year||YEAR).slice(-2);
+  C.forEach(c=>A.push([c.seg,c.n,c.io,c.ion,ytdLbl,...vals(c.rs,c.ro,c.ds,c.do,c.cat)]));A.push([],[],[]);A.push(HD);
+  C.forEach(c=>{for(let m=0;m<12;m++){const cat=Object.fromEntries(ING_CK.map(k=>[k,[c.mc[k][0][m]||0,c.mc[k][1][m]||0]]));A.push([c.seg,c.n,c.io,c.ion,m+1,...vals(c.mr[m]||0,c.mro[m]||0,c.md[m]||0,c.mdo[m]||0,cat)])}});
+  const ws=XLSX.utils.aoa_to_sheet(A);ws['!cols']=[{wch:12},{wch:26},{wch:15},{wch:42},{wch:12},...VH.map(()=>({wch:16}))];XLSX.utils.book_append_sheet(wb,ws,'GPM');
+  const PV=[[],[],['Sum of Amount LC','','','','','PL'],['IO dan CC 2026 Cek','IO Grup Cek','Nama IO dan CC','Segmentasi Ops 2026','Segmentasi Sales 2026','1.PENDAPATAN','2.DIRECT','4.DEPRESIASI','Grand Total']];
+  C.forEach(c=>{const r=-(c.pvRev||0),d=c.pvDir||0,dp=c.dep[0]||0;PV.push([c.io,'',c.ion,'G&E','G&E',r||null,d||null,dp||null,r+d+dp])});
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(PV),'PVT');
+  const T=D.targets||{};const ts=Object.keys(T).sort();const tot=(q,k)=>sum(ts,s=>T[s][q][k]||0);
+  const OK=[['','OKR'],['','Target Q3','Revenue','Direct Cost','GP','GPM'],['','Target',tot('q3','rev'),tot('q3','dir'),tot('q3','gp'),tot('q3','rev')?tot('q3','gp')/tot('q3','rev'):null],
+    ...ts.map(s=>['',s,T[s].q3.rev,T[s].q3.dir,T[s].q3.gp,T[s].q3.gpm]),[],[],['','PMS'],['','Target Q4','Revenue','Direct Cost','GP','GPM'],['','',tot('q4','rev'),tot('q4','dir'),tot('q4','gp'),tot('q4','rev')?tot('q4','gp')/tot('q4','rev'):null],
+    ...ts.map(s=>['',s,T[s].q4.rev,T[s].q4.dir,T[s].q4.gp,T[s].q4.gpm])];
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(OK),'OKR');
+  const HL=[['Petunjuk pengisian template Profitability G&E'],[],
+    ['1. Sheet GPM','Struktur sama dengan file "Share Profitability". Baris dengan Month = "YTD …" adalah total YTD (dipakai untuk rekonsiliasi); baris dengan Month = 1–12 adalah rincian bulanan (dipakai untuk semua angka dashboard dan filter periode).'],
+    ['','Satu layanan diidentifikasi oleh kombinasi Departement + Layanan. Satu layanan boleh punya beberapa IO pada baris bulanan; nilainya dijumlahkan.'],
+    ['','Isi bulan Okt–Des (Month 10–12) saat data tersedia. Kolom GPM dan GP boleh dikosongkan; dashboard menghitung ulang dari Revenue dan Direct Cost.'],
+    ['2. Sheet PVT','Opsional. Ledger SAP per IO: 1.PENDAPATAN (tanda negatif seperti di SAP), 2.DIRECT, 4.DEPRESIASI. Dipakai untuk D&A dan pembanding rekap vs ledger.'],
+    ['3. Sheet OKR','Opsional. Baris per segmen: blok pertama = Target Q3 (kumulatif Jan–Sep), blok kedua = Target Q4 (setahun). Kolom: Revenue, Direct Cost, GP, GPM.'],
+    ['4. Unggah','Modul 11 → Upload data. File asli "Share Profitability" (dengan sheet Detail) juga bisa diunggah langsung; hanya sheet GPM, PVT, dan OKR yang dibaca.']];
+  const wh=XLSX.utils.aoa_to_sheet(HL);wh['!cols']=[{wch:16},{wch:140}];XLSX.utils.book_append_sheet(wb,wh,'Petunjuk');
+  return wb}
+
+let PENDING=null,OFFICIAL_D=null;
+function handleFile(f){const box=document.getElementById('upRes');box.innerHTML='<p class="hint">Membaca '+esc(f.name)+' ('+nf1.format(f.size/1048576)+' MB)… File besar bisa butuh beberapa detik.</p>';
+  const rd=new FileReader();
+  rd.onload=e=>setTimeout(()=>{let res;try{const wb=XLSX.read(e.target.result,{type:'array',cellDates:true,sheets:['GPM','PVT','OKR']});res=ingestWorkbook(wb,f.name,D)}catch(ex){res={log:[],warn:[],err:['File tidak dapat dibaca: '+ex.message]}}
+    const h=LS.get('uploads',[]);
+    if(res.err.length){h.unshift({t:new Date().toLocaleString('id-ID'),f:f.name,r:'GAGAL · '+res.err.join(' ')});LS.set('uploads',h.slice(0,20));
+      box.innerHTML=`<div class="callout neg"><b>Upload ditolak.</b><br>${res.err.map(esc).join('<br>')}</div>${res.log.length?'<div class="log">'+res.log.map(esc).join('<br>')+'</div>':''}`;return}
+    PENDING={ds:res.ds,name:f.name};const n=res.ds,cs=n.clients;
+    const rs=sum(cs,c=>c.rs),ro=sum(cs,c=>c.ro),ds_=sum(cs,c=>c.ds),dO=sum(cs,c=>c.do);const oR=sum(D.clients,c=>c.rs),oD=sum(D.clients,c=>c.ds);
+    const mis=cs.filter(c=>Math.abs(sum(c.mr)-c.rs)>20||Math.abs(sum(c.md)-c.ds)>20||Math.abs(sum(c.mro)-c.ro)>20||Math.abs(sum(c.mdo)-c.do)>20);
+    const newN=cs.filter(c=>!D.clients.some(x=>x.n===c.n&&x.seg===c.seg)).map(c=>c.n),goneN=D.clients.filter(x=>!cs.some(c=>c.n===x.n&&c.seg===x.seg)).map(c=>c.n);
+    const can=typeof PORTAL!=='undefined'&&PORTAL.canWrite;
+    box.innerHTML=`<div class="callout"><b>Pratinjau: ${esc(f.name)}</b><br>${cs.length} layanan · data ${MONTHS_ALL[0]}–${MONTHS_ALL[n.dataMonths-1]} ${n.year} · revenue SAP ${rc(rs)} (sebelumnya ${rc(oR)}) · direct cost SAP ${rc(ds_)} (sebelumnya ${rc(oD)})</div>
+     <div class="tw"><table><tbody>
+      <tr><td>Revenue SAP / OPS (YTD)</td><td class="n">${rp(rs)}</td><td class="n">${rp(ro)}</td></tr>
+      <tr><td>Direct cost SAP / OPS (YTD)</td><td class="n">${rp(ds_)}</td><td class="n">${rp(dO)}</td></tr>
+      <tr><td>Rincian bulanan vs YTD</td><td colspan="2">${mis.length?`<span class="pill st-bt">${mis.length} layanan berselisih</span> ${mis.slice(0,6).map(c=>esc(c.n)).join(', ')}`:'<span class="pill st-hi">Cocok</span>'}</td></tr>
+      <tr><td>Layanan baru / hilang</td><td colspan="2" class="wrap">${newN.length?'Baru: '+newN.slice(0,10).map(esc).join(', ')+(newN.length>10?' …':''):'Tidak ada layanan baru'}${goneN.length?'<br>Tidak ada lagi: '+goneN.slice(0,10).map(esc).join(', ')+(goneN.length>10?' …':''):''}</td></tr></tbody></table></div>
+     <div class="log">${res.log.map(esc).join('<br>')}${res.warn.length?'<br><br>Peringatan:<br>'+res.warn.map(esc).join('<br>'):''}</div>
+     <div style="display:flex;gap:8px;flex-wrap:wrap">${can?'<button class="btn pri" id="upPublish" type="button">Terapkan &amp; perbarui dashboard semua pengguna</button>':''}<button class="btn" id="upLocal" type="button">Terapkan hanya di tampilan saya</button><button class="btn" id="upCancel" type="button">Batal</button></div>
+     ${can?'<p class="hint">"Terapkan & perbarui" mengganti dataset resmi di Firestore. Semua dashboard yang sedang terbuka ikut ter-update dan perubahan tercatat di audit trail.</p>':''}`;
+    const done=r=>{h.unshift({t:new Date().toLocaleString('id-ID'),f:f.name,r});LS.set('uploads',h.slice(0,20))};
+    document.getElementById('upCancel').addEventListener('click',()=>{PENDING=null;box.innerHTML=''});
+    document.getElementById('upLocal').addEventListener('click',()=>{if(!OFFICIAL_D)OFFICIAL_D=D;D=PENDING.ds;DATA={clients:D.clients.map(c=>({...c})),origin:'upload'};st.pe=null;st.seg='all';st.sl='all';st.cust='all';applyMonths();buildFilters();done(`Tampilan pribadi · ${cs.length} layanan · revenue ${rc(rs)}`);render();toast('Data upload diterapkan di tampilan Anda saja.')});
+    const pb=document.getElementById('upPublish');if(pb)pb.addEventListener('click',async()=>{pb.disabled=true;pb.textContent='Menyimpan…';
+      try{await saveDataset(PENDING.ds,f.name);done(`Dipublikasikan · ${cs.length} layanan · revenue ${rc(rs)}`);st.pe=null;toast('Dataset resmi diperbarui dari '+f.name+'.')}catch(err2){pb.disabled=false;pb.textContent='Terapkan & perbarui dashboard semua pengguna';toast(errText(err2))}});
+  },30);
+  rd.onerror=()=>{box.innerHTML='<div class="callout neg">File tidak dapat dibaca.</div>'};
   rd.readAsArrayBuffer(f)}
+
 
 VIEWS.kamus={html(){const K=[
  ['Total Revenue','Σ pendapatan periode terpilih','Sheet GPM (Revenue SAP / OPS)','Tersedia'],
@@ -1008,20 +1128,21 @@ VIEWS.kamus={html(){const K=[
 /* ---------- events ---------- */
 srcSap.addEventListener('click',()=>{st.src='sap';buildFilters();render()});
 srcOps.addEventListener('click',()=>{st.src='ops';buildFilters();render()});
+fPe.addEventListener('change',e=>{st.pe=+e.target.value;st.m0=0;st.m1Auto=true;st.m1=null;applyMonths();buildFilters();render()});
 fSeg.addEventListener('change',e=>{st.seg=e.target.value;st.sl='all';st.cust='all';buildFilters();render()});
 fSl.addEventListener('change',e=>{st.sl=e.target.value;st.cust='all';buildFilters();render()});
 fCust.addEventListener('change',e=>{st.cust=e.target.value;render()});
 fTarget.addEventListener('change',e=>{st.target=Math.max(0,Math.min(100,+e.target.value||0));render()});
-fM0.addEventListener('change',e=>{st.m0=+e.target.value;if(st.m1<st.m0){st.m1=st.m0;fM1.value=st.m1}render()});
-fM1.addEventListener('change',e=>{st.m1=+e.target.value;if(st.m1<st.m0){st.m0=st.m1;fM0.value=st.m0}render()});
-fReset.addEventListener('click',()=>{Object.assign(st,{src:'sap',seg:'all',sl:'all',cust:'all',target:45,m0:0,m1:NM-1,hb:15,bb:15,q:''});buildFilters();render()});
+fM0.addEventListener('change',e=>{st.m0=+e.target.value;st.m1Auto=false;if(st.m1<st.m0){st.m1=st.m0;fM1.value=st.m1}render()});
+fM1.addEventListener('change',e=>{st.m1=+e.target.value;st.m1Auto=false;if(st.m1<st.m0){st.m0=st.m1;fM0.value=st.m0}render()});
+fReset.addEventListener('click',()=>{Object.assign(st,{pe:null,m1Auto:true,src:'sap',seg:'all',sl:'all',cust:'all',target:45,m0:0,m1:null,hb:15,bb:15,q:''});applyMonths();buildFilters();render()});
 window.addEventListener('hashchange',route);
 const mq=window.matchMedia('(prefers-color-scheme: dark)');mq.addEventListener&&mq.addEventListener('change',()=>render());
 new MutationObserver(()=>render()).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
-function bootDashboard(data){D=data;DATA={clients:D.clients.map(c=>({...c})),origin:'file'};
-  st.seg='all';st.sl='all';st.cust='all';st.m1=99;applyMonths();buildNav();buildFilters();route();
+function bootDashboard(data){D=normalizeDataset(data);DATA={clients:D.clients.map(c=>({...c})),origin:'file'};
+  st.seg='all';st.sl='all';st.cust='all';st.pe=null;st.m1=null;applyMonths();buildNav();buildFilters();route();
   if(document.fonts&&document.fonts.ready)document.fonts.ready.then(()=>render());}
-function refreshData(data){D=data;if(DATA.origin!=='file')return false;
+function refreshData(data){data=normalizeDataset(data);if(DATA.origin!=='file'){OFFICIAL_D=data;return false}D=data;
   const dlg=document.getElementById('dlg');if(dlg&&dlg.open)dlg.close();
   DATA={clients:D.clients.map(c=>({...c})),origin:'file'};applyMonths();buildFilters();
   const y=window.scrollY;render();window.scrollTo(0,y);return true}
